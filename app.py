@@ -2,20 +2,20 @@ import streamlit as st
 import requests
 import time
 import json
+import pandas as pd
 
 # 1. SAYFA AYARLARI
-st.set_page_config(page_title="Tiger SMS TR Hunter", layout="centered", page_icon="🇹🇷")
+st.set_page_config(page_title="Tiger SMS - Manuel Seçim", layout="wide", page_icon="🌍")
 
 # --- KONFİGÜRASYON ---
 try:
     API_KEY = st.secrets["TIGER_API_KEY"]
     PANEL_SIFRESI = st.secrets["PANEL_SIFRESI"]
 except KeyError:
-    st.error("🚨 Lütfen .streamlit/secrets.toml dosyasını kontrol edin!")
+    st.error("🚨 .streamlit/secrets.toml dosyası eksik!")
     st.stop()
 
 BASE_URL = "https://api.tiger-sms.com/stubs/handler_api.php"
-TR_ID = "9" # Tiger SMS Türkiye Ülke Kodu
 
 class TigerSMSBot:
     def __init__(self, api_key):
@@ -30,25 +30,32 @@ class TigerSMSBot:
         except:
             return "ERROR"
 
-    def get_tr_stock(self, service_code):
-        # Sadece Türkiye (ID: 9) fiyat ve stok bilgisini çeker
-        res = self.call_api("getPrices", service=service_code, country=TR_ID)
+    def get_full_stock_list(self, service_code):
+        res = self.call_api("getPrices", service=service_code)
         try:
             data = json.loads(res)
-            # Yanıt formatı: {"service": {"9": {"cost": X, "count": Y}}}
-            if service_code in data and TR_ID in data[service_code]:
-                info = data[service_code][TR_ID]
-                return info.get('cost'), info.get('count')
-            return None, 0
+            # API bazen {'servis': {'id': {..}}} bazen doğrudan {'id': {..}} döner
+            service_data = data.get(service_code, data)
+            
+            stock_list = []
+            for country_id, info in service_data.items():
+                if isinstance(info, dict) and info.get('count', 0) > 0:
+                    stock_list.append({
+                        "id": country_id,
+                        "fiyat": info.get('cost'),
+                        "stok": info.get('count')
+                    })
+            # Fiyata göre en ucuzdan en pahalıya sırala
+            return sorted(stock_list, key=lambda x: x['fiyat']), res
         except:
-            return None, 0
+            return [], res
 
 # --- GİRİŞ EKRANI ---
 if "authenticated" not in st.session_state:
     st.session_state["authenticated"] = False
 
 if not st.session_state["authenticated"]:
-    st.title("🇹🇷 TR SMS Paneli Giriş")
+    st.title("🔒 Güvenli SMS Paneli")
     pwd_input = st.text_input("Şifre:", type="password")
     if st.button("Giriş Yap"):
         if pwd_input.strip() == PANEL_SIFRESI:
@@ -71,62 +78,61 @@ if st.sidebar.button("🚪 Çıkış"):
     st.rerun()
 
 # --- ANA EKRAN ---
-st.title("🇹🇷 Türkiye Özel SMS Paneli")
+st.title("🌍 Numara Sağlayıcı Listesi")
 
-# TR Fiyat ve Stok Sorgulama
-with st.spinner("Türkiye stokları kontrol ediliyor..."):
-    y_cost, y_count = bot.get_tr_stock("yi")
-    u_cost, u_count = bot.get_tr_stock("ub")
+service_map = {"Yemeksepeti": "yi", "Uber": "ub"}
+selected_service_name = st.radio("Hangi servis için sağlayıcıları görmek istersiniz?", list(service_map.keys()), horizontal=True)
+selected_code = service_map[selected_service_name]
+
+if st.button(f"🔍 {selected_service_name} Sağlayıcılarını Getir"):
+    st.session_state['last_service'] = selected_code
+    st.rerun()
 
 st.divider()
 
-col_y, col_u = st.columns(2)
-
-def tr_buy(s_name, s_code, count):
-    if count > 0:
-        num_res = bot.call_api("getNumber", service=s_code, country=TR_ID)
-        if "ACCESS_NUMBER" in num_res:
-            parts = num_res.split(":")
-            st.session_state['active_orders'].append({
-                "id": parts[1], "phone": parts[2], "service": s_name,
-                "time": time.time(), "status": "Bekliyor", "code": None
-            })
-            st.success(f"✅ TR {s_name} numarası alındı!")
-        else:
-            st.error(f"Hata: {num_res}")
+# Sağlayıcı Listesini Göster
+if 'last_service' in st.session_state:
+    stocks, raw = bot.get_full_stock_list(st.session_state['last_service'])
+    
+    if stocks:
+        st.subheader(f"📍 {selected_service_name} İçin Mevcut Ülkeler")
+        # Sağlayıcıları 3 kolonlu bir düzende gösterelim ki çok yer kaplamasın
+        cols = st.columns(3)
+        for idx, item in enumerate(stocks):
+            with cols[idx % 3]:
+                with st.container(border=True):
+                    st.write(f"🌍 **Ülke ID:** {item['id']}")
+                    st.write(f"💰 **Fiyat:** {item['fiyat']} RUB")
+                    st.write(f"📦 **Stok:** {item['stok']} Adet")
+                    if st.button(f"Satın Al", key=f"buy_{item['id']}_{idx}"):
+                        num_res = bot.call_api("getNumber", service=st.session_state['last_service'], country=item['id'])
+                        if "ACCESS_NUMBER" in num_res:
+                            parts = num_res.split(":")
+                            st.session_state['active_orders'].append({
+                                "id": parts[1], "phone": parts[2], "service": selected_service_name,
+                                "time": time.time(), "status": "Bekliyor", "code": None
+                            })
+                            st.success(f"✅ +{parts[2]} Alındı!")
+                        else:
+                            st.error(f"Hata: {num_res}")
     else:
-        st.error("❌ Türkiye stokta şu an numara yok!")
-
-# Yemeksepeti Kartı
-with col_y:
-    st.subheader("🍔 Yemeksepeti")
-    st.write(f"💰 Fiyat: **{y_cost if y_cost else '--'} RUB**")
-    st.write(f"📦 Stok: **{y_count} Adet**")
-    if st.button("TR NUMARA AL (YEMEK)", use_container_width=True, disabled=(y_count == 0)):
-        tr_buy("Yemeksepeti", "yi", y_count)
-
-# Uber Kartı
-with col_u:
-    st.subheader("🚗 Uber")
-    st.write(f"💰 Fiyat: **{u_cost if u_cost else '--'} RUB**")
-    st.write(f"📦 Stok: **{u_count} Adet**")
-    if st.button("TR NUMARA AL (UBER)", use_container_width=True, disabled=(u_count == 0)):
-        tr_buy("Uber", "ub", u_count)
+        st.warning("Bu servis için hiçbir ülkede stok bulunamadı.")
+        with st.expander("API Yanıtını İncele"):
+            st.code(raw)
 
 st.divider()
 
 # --- AKTİF İŞLEMLER ---
-st.subheader("📋 Aktif Numaralar")
-for idx, order in enumerate(st.session_state['active_orders']):
+st.subheader("📋 İşlem Takibi")
+for order in st.session_state['active_orders']:
     with st.container(border=True):
         c1, c2, c3, c4 = st.columns([2, 2, 2, 1])
-        c1.write(f"**{order['service']}**\n\n`+{order['phone']}`")
+        c1.write(f"**{order['service']}**\n`+{order['phone']}`")
         
         if order['code'] is None:
             check = bot.call_api("getStatus", id=order['id'])
             if "STATUS_OK" in check:
-                order['code'] = check.split(":")[1]
-                order['status'] = "✅ TAMAMLANDI"
+                order['code'] = check.split(":")[1]; order['status'] = "✅ TAMAMLANDI"
                 bot.call_api("setStatus", id=order['id'], status=6)
             elif "STATUS_WAIT_CODE" in check:
                 ds = int(time.time() - order['time'])
@@ -135,13 +141,9 @@ for idx, order in enumerate(st.session_state['active_orders']):
         c2.write(f"**Durum:** {order['status']}")
         if order['code']: c2.success(f"**KOD: {order['code']}**")
 
-        gs = time.time() - order['time']
-        ks = max(0, 120 - int(gs))
-        
-        # İptal butonu 2 dk dolana kadar pasif
-        if order['code'] is None and "İptal" not in order['status']:
-            if ks > 0:
-                c3.button(f"İptal ({ks}s)", key=f"w_{order['id']}", disabled=True)
+        ks = max(0, 120 - int(time.time() - order['time']))
+        if order['code'] is None:
+            if ks > 0: c3.button(f"İptal ({ks}s)", key=f"w_{order['id']}", disabled=True)
             else:
                 if c3.button("✖️ İptal Et", key=f"c_{order['id']}"):
                     bot.call_api("setStatus", id=order['id'], status=8)
@@ -153,5 +155,4 @@ for idx, order in enumerate(st.session_state['active_orders']):
             st.rerun()
 
 if canli_takip and len(st.session_state['active_orders']) > 0:
-    time.sleep(2)
-    st.rerun()
+    time.sleep(2); st.rerun()
