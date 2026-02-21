@@ -2,7 +2,6 @@ import streamlit as st
 import requests
 import time
 import json
-import pandas as pd
 
 # 1. SAYFA AYARLARI
 st.set_page_config(page_title="Tiger SMS - Manuel Seçim", layout="wide", page_icon="🌍")
@@ -32,19 +31,20 @@ class TigerSMSBot:
 
     def get_full_stock_list(self, service_code):
         res = self.call_api("getPrices", service=service_code)
+        stock_list = []
         try:
             data = json.loads(res)
-            # API bazen {'servis': {'id': {..}}} bazen doğrudan {'id': {..}} döner
-            service_data = data.get(service_code, data)
-            
-            stock_list = []
-            for country_id, info in service_data.items():
-                if isinstance(info, dict) and info.get('count', 0) > 0:
-                    stock_list.append({
-                        "id": country_id,
-                        "fiyat": info.get('cost'),
-                        "stok": info.get('count')
-                    })
+            # YENİ MANTIK: Gelen veride her ülkeyi tek tek geziyoruz
+            for country_id, services in data.items():
+                # Eğer servis kodu bu ülkenin içinde varsa
+                if service_code in services:
+                    info = services[service_code]
+                    if info.get('count', 0) > 0:
+                        stock_list.append({
+                            "id": country_id,
+                            "fiyat": float(info.get('cost')),
+                            "stok": info.get('count')
+                        })
             # Fiyata göre en ucuzdan en pahalıya sırala
             return sorted(stock_list, key=lambda x: x['fiyat']), res
         except:
@@ -72,57 +72,62 @@ if 'active_orders' not in st.session_state:
 balance_res = bot.call_api("getBalance")
 balance = balance_res.split(":")[1] if "ACCESS_BALANCE" in balance_res else "0"
 st.sidebar.metric("💰 Bakiyeniz", f"{balance} RUB")
-canli_takip = st.sidebar.toggle("🟢 Otomatik SMS Takibi", value=True)
+canli_takip = st.sidebar.toggle("🟢 Canlı SMS Takibi", value=True)
 if st.sidebar.button("🚪 Çıkış"):
     st.session_state["authenticated"] = False
     st.rerun()
 
 # --- ANA EKRAN ---
-st.title("🌍 Numara Sağlayıcı Listesi")
+st.title("🌍 Manuel Sağlayıcı Seçimi")
 
 service_map = {"Yemeksepeti": "yi", "Uber": "ub"}
-selected_service_name = st.radio("Hangi servis için sağlayıcıları görmek istersiniz?", list(service_map.keys()), horizontal=True)
+selected_service_name = st.radio("Bir servis seçin:", list(service_map.keys()), horizontal=True)
 selected_code = service_map[selected_service_name]
 
-if st.button(f"🔍 {selected_service_name} Sağlayıcılarını Getir"):
-    st.session_state['last_service'] = selected_code
+if st.button(f"🔍 {selected_service_name} Sağlayıcılarını Listele"):
+    st.session_state['last_service_code'] = selected_code
+    st.session_state['last_service_name'] = selected_service_name
     st.rerun()
 
 st.divider()
 
 # Sağlayıcı Listesini Göster
-if 'last_service' in st.session_state:
-    stocks, raw = bot.get_full_stock_list(st.session_state['last_service'])
+if 'last_service_code' in st.session_state:
+    s_code = st.session_state['last_service_code']
+    s_name = st.session_state['last_service_name']
+    stocks, raw = bot.get_full_stock_list(s_code)
     
     if stocks:
-        st.subheader(f"📍 {selected_service_name} İçin Mevcut Ülkeler")
-        # Sağlayıcıları 3 kolonlu bir düzende gösterelim ki çok yer kaplamasın
-        cols = st.columns(3)
+        st.subheader(f"📍 {s_name} İçin Mevcut Ülkeler")
+        cols = st.columns(4) # Daha geniş görünüm için 4 kolon
         for idx, item in enumerate(stocks):
-            with cols[idx % 3]:
+            with cols[idx % 4]:
                 with st.container(border=True):
-                    st.write(f"🌍 **Ülke ID:** {item['id']}")
-                    st.write(f"💰 **Fiyat:** {item['fiyat']} RUB")
-                    st.write(f"📦 **Stok:** {item['stok']} Adet")
+                    # Türkiye vurgusu (ID 62 veya 9 olabilir, Tiger bazen değiştiriyor)
+                    label = "🇹🇷 TÜRKİYE" if item['id'] in ["62", "9"] else f"🌍 Ülke ID: {item['id']}"
+                    st.write(f"**{label}**")
+                    st.write(f"💰 {item['fiyat']} RUB")
+                    st.write(f"📦 Stok: {item['stok']}")
+                    
                     if st.button(f"Satın Al", key=f"buy_{item['id']}_{idx}"):
-                        num_res = bot.call_api("getNumber", service=st.session_state['last_service'], country=item['id'])
+                        num_res = bot.call_api("getNumber", service=s_code, country=item['id'])
                         if "ACCESS_NUMBER" in num_res:
                             parts = num_res.split(":")
                             st.session_state['active_orders'].append({
-                                "id": parts[1], "phone": parts[2], "service": selected_service_name,
+                                "id": parts[1], "phone": parts[2], "service": s_name,
                                 "time": time.time(), "status": "Bekliyor", "code": None
                             })
                             st.success(f"✅ +{parts[2]} Alındı!")
                         else:
                             st.error(f"Hata: {num_res}")
     else:
-        st.warning("Bu servis için hiçbir ülkede stok bulunamadı.")
-        with st.expander("API Yanıtını İncele"):
+        st.warning("Stok bulunamadı.")
+        with st.expander("Ham Veriyi Gör"):
             st.code(raw)
 
 st.divider()
 
-# --- AKTİF İŞLEMLER ---
+# --- AKTİF İŞLEMLER (Kalıcı Liste) ---
 st.subheader("📋 İşlem Takibi")
 for order in st.session_state['active_orders']:
     with st.container(border=True):
