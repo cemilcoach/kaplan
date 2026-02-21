@@ -4,7 +4,7 @@ import time
 import json
 
 # 1. SAYFA AYARLARI
-st.set_page_config(page_title="Tiger SMS - Manuel Seçim", layout="wide", page_icon="🌍")
+st.set_page_config(page_title="Tiger SMS - Sadece Türkiye", layout="centered", page_icon="🇹🇷")
 
 # --- KONFİGÜRASYON ---
 try:
@@ -15,6 +15,8 @@ except KeyError:
     st.stop()
 
 BASE_URL = "https://api.tiger-sms.com/stubs/handler_api.php"
+# Paylaştığın veriye göre Türkiye ID'si 62. Bazı durumlarda 9 da olabilir.
+TR_IDS = ["62", "9"] 
 
 class TigerSMSBot:
     def __init__(self, api_key):
@@ -29,39 +31,32 @@ class TigerSMSBot:
         except:
             return "ERROR"
 
-    def get_full_stock_list(self, service_code):
+    def get_tr_data(self, service_code):
         res = self.call_api("getPrices", service=service_code)
-        stock_list = []
         try:
             data = json.loads(res)
-            # YENİ MANTIK: Gelen veride her ülkeyi tek tek geziyoruz
-            for country_id, services in data.items():
-                # Eğer servis kodu bu ülkenin içinde varsa
-                if service_code in services:
-                    info = services[service_code]
-                    if info.get('count', 0) > 0:
-                        stock_list.append({
-                            "id": country_id,
-                            "fiyat": float(info.get('cost')),
-                            "stok": info.get('count')
-                        })
-            # Fiyata göre en ucuzdan en pahalıya sırala
-            return sorted(stock_list, key=lambda x: x['fiyat']), res
+            # JSON içinde TR_IDS listesindeki ID'leri tara
+            for tr_id in TR_IDS:
+                # Veri yapısı: data[ülke_id][servis_kodu]
+                if tr_id in data and service_code in data[tr_id]:
+                    info = data[tr_id][service_code]
+                    return tr_id, info.get('cost'), info.get('count')
+            return None, None, 0
         except:
-            return [], res
+            return None, None, 0
 
-# --- GİRİŞ EKRANI ---
+# --- GİRİŞ KONTROLÜ ---
 if "authenticated" not in st.session_state:
     st.session_state["authenticated"] = False
 
 if not st.session_state["authenticated"]:
-    st.title("🔒 Güvenli SMS Paneli")
+    st.title("🇹🇷 TR Panel Girişi")
     pwd_input = st.text_input("Şifre:", type="password")
     if st.button("Giriş Yap"):
         if pwd_input.strip() == PANEL_SIFRESI:
             st.session_state["authenticated"] = True
             st.rerun()
-        else: st.error("❌ Hatalı!")
+        else: st.error("❌ Şifre Yanlış!")
     st.stop()
 
 bot = TigerSMSBot(API_KEY)
@@ -78,56 +73,51 @@ if st.sidebar.button("🚪 Çıkış"):
     st.rerun()
 
 # --- ANA EKRAN ---
-st.title("🌍 Manuel Sağlayıcı Seçimi")
+st.title("🇹🇷 Türkiye Özel SMS Paneli")
+st.info("Sadece Türkiye (TR) stokları listelenmektedir.")
 
-service_map = {"Yemeksepeti": "yi", "Uber": "ub"}
-selected_service_name = st.radio("Bir servis seçin:", list(service_map.keys()), horizontal=True)
-selected_code = service_map[selected_service_name]
+col_y, col_u = st.columns(2)
 
-if st.button(f"🔍 {selected_service_name} Sağlayıcılarını Listele"):
-    st.session_state['last_service_code'] = selected_code
-    st.session_state['last_service_name'] = selected_service_name
-    st.rerun()
+def buy_tr(s_name, s_code, tr_id):
+    with st.spinner("Numara alınıyor..."):
+        num_res = bot.call_api("getNumber", service=s_code, country=tr_id)
+        if "ACCESS_NUMBER" in num_res:
+            parts = num_res.split(":")
+            st.session_state['active_orders'].append({
+                "id": parts[1], "phone": parts[2], "service": s_name,
+                "time": time.time(), "status": "Bekliyor", "code": None
+            })
+            st.success(f"✅ +{parts[2]} Alındı!")
+        else:
+            st.error(f"Hata: {num_res}")
 
-st.divider()
-
-# Sağlayıcı Listesini Göster
-if 'last_service_code' in st.session_state:
-    s_code = st.session_state['last_service_code']
-    s_name = st.session_state['last_service_name']
-    stocks, raw = bot.get_full_stock_list(s_code)
-    
-    if stocks:
-        st.subheader(f"📍 {s_name} İçin Mevcut Ülkeler")
-        cols = st.columns(4) # Daha geniş görünüm için 4 kolon
-        for idx, item in enumerate(stocks):
-            with cols[idx % 4]:
-                with st.container(border=True):
-                    # Türkiye vurgusu (ID 62 veya 9 olabilir, Tiger bazen değiştiriyor)
-                    label = "🇹🇷 TÜRKİYE" if item['id'] in ["62", "9"] else f"🌍 Ülke ID: {item['id']}"
-                    st.write(f"**{label}**")
-                    st.write(f"💰 {item['fiyat']} RUB")
-                    st.write(f"📦 Stok: {item['stok']}")
-                    
-                    if st.button(f"Satın Al", key=f"buy_{item['id']}_{idx}"):
-                        num_res = bot.call_api("getNumber", service=s_code, country=item['id'])
-                        if "ACCESS_NUMBER" in num_res:
-                            parts = num_res.split(":")
-                            st.session_state['active_orders'].append({
-                                "id": parts[1], "phone": parts[2], "service": s_name,
-                                "time": time.time(), "status": "Bekliyor", "code": None
-                            })
-                            st.success(f"✅ +{parts[2]} Alındı!")
-                        else:
-                            st.error(f"Hata: {num_res}")
+# Yemeksepeti TR
+with col_y:
+    st.subheader("🍔 Yemeksepeti")
+    tr_id, cost, count = bot.get_tr_data("yi")
+    if tr_id:
+        st.write(f"💰 Fiyat: **{cost} RUB**")
+        st.write(f"📦 Stok: **{count} Adet**")
+        if st.button("TR YEMEKSEPETİ SATIN AL", use_container_width=True):
+            buy_tr("Yemeksepeti", "yi", tr_id)
     else:
-        st.warning("Stok bulunamadı.")
-        with st.expander("Ham Veriyi Gör"):
-            st.code(raw)
+        st.error("❌ Yemeksepeti TR Stokta Yok")
+
+# Uber TR
+with col_u:
+    st.subheader("🚗 Uber")
+    tr_id, cost, count = bot.get_tr_data("ub")
+    if tr_id:
+        st.write(f"💰 Fiyat: **{cost} RUB**")
+        st.write(f"📦 Stok: **{count} Adet**")
+        if st.button("TR UBER SATIN AL", use_container_width=True):
+            buy_tr("Uber", "ub", tr_id)
+    else:
+        st.error("❌ Uber TR Stokta Yok")
 
 st.divider()
 
-# --- AKTİF İŞLEMLER (Kalıcı Liste) ---
+# --- AKTİF İŞLEMLER ---
 st.subheader("📋 İşlem Takibi")
 for order in st.session_state['active_orders']:
     with st.container(border=True):
