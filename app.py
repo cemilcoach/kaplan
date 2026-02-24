@@ -4,7 +4,7 @@ import time
 import json
 
 # 1. SAYFA AYARLARI
-st.set_page_config(page_title="Tiger SMS - Pro Auto-Cancel", layout="wide", page_icon="🇹🇷")
+st.set_page_config(page_title="Tiger SMS - Geniş Dinleme", layout="wide", page_icon="🕵️")
 
 # --- KONFİGÜRASYON ---
 try:
@@ -13,12 +13,12 @@ try:
     TG_TOKEN = st.secrets["TELEGRAM_TOKEN"]
     TG_CHAT_ID = st.secrets["TELEGRAM_CHAT_ID"]
 except KeyError:
-    st.error("🚨 Secrets dosyası eksik! Lütfen Telegram ve API bilgilerini kontrol edin.")
+    st.error("🚨 Secrets dosyası eksik! Lütfen bilgileri kontrol edin.")
     st.stop()
 
 BASE_URL = "https://api.tiger-sms.com/stubs/handler_api.php"
 TR_ID = "62"
-AUTO_CANCEL_SEC = 135 # 2 Dakika 15 Saniye
+AUTO_CANCEL_SEC = 135 
 
 class TigerSMSBot:
     def __init__(self, api_key):
@@ -48,7 +48,7 @@ class TigerSMSBot:
             return None, 0
         except: return None, 0
 
-# --- GİRİŞ KONTROLÜ ---
+# --- GİRİŞ ---
 if "authenticated" not in st.session_state:
     st.session_state["authenticated"] = False
 
@@ -59,7 +59,6 @@ if not st.session_state["authenticated"]:
         if pwd_input.strip() == PANEL_SIFRESI:
             st.session_state["authenticated"] = True
             st.rerun()
-        else: st.error("❌ Hatalı Şifre!")
     st.stop()
 
 bot = TigerSMSBot(API_KEY)
@@ -71,19 +70,13 @@ st.sidebar.title("🤖 Panel Kontrol")
 balance_res = bot.call_api("getBalance")
 balance = balance_res.split(":")[1] if "ACCESS_BALANCE" in balance_res else "0"
 st.sidebar.metric("💰 Bakiyeniz", f"{balance} RUB")
-
-if st.sidebar.button("🔔 Telegram Botu Test Et", use_container_width=True):
-    bot.send_telegram("<b>🚀 Test Mesajı!</b>\nBağlantı aktif.")
-    st.sidebar.success("Test gönderildi!")
-
+if st.sidebar.button("🔔 Bot Test", use_container_width=True):
+    bot.send_telegram("🚀 Test aktif!")
 canli_takip = st.sidebar.toggle("🟢 Canlı Takip", value=True)
 
-if st.sidebar.button("🚪 Çıkış", use_container_width=True):
-    st.session_state["authenticated"] = False
-    st.rerun()
-
 # --- ANA EKRAN ---
-st.title("🇹🇷 Tiger Pro SMS (Otomatik İptal Aktif)")
+st.title("🕵️ TR Geniş Dinleme Paneli")
+st.warning("Strateji: Ucuz Uber/Yemek numarasından Espressolab kodu yakalamaya çalışıyoruz.")
 
 if st.button("🔄 Stokları Güncelle", use_container_width=True):
     st.rerun()
@@ -96,40 +89,39 @@ def buy_process(s_name, s_code):
             "id": parts[1], "phone": parts[2], "service": s_name,
             "service_code": s_code, "time": time.time(), "status": "Bekliyor", "code": None
         })
-        st.toast(f"✅ {s_name} Alındı!", icon='🇹🇷')
+        # API'ye 'SMS gönderildi, bekliyorum' sinyali ver
+        bot.call_api("setStatus", id=parts[1], status=1)
+        st.toast(f"✅ {s_name} (Ucuz) Alındı!", icon='🕵️')
     else: st.error(f"Hata: {num_res}")
 
 col_y, col_u = st.columns(2)
 with col_y:
-    st.header("🍔 Yemeksepeti")
+    st.header("🍔 Yemeksepeti (Ucuz)")
     y_cost, y_count = bot.get_tr_62_data("yi")
     if y_cost:
-        st.write(f"💰 {y_cost} RUB | 📦 {y_count} Adet")
-        if st.button("TR YEMEK AL", key="buy_yi_62", use_container_width=True):
+        st.write(f"💰 {y_cost} RUB")
+        if st.button("TR YEMEK AL (DENEME)", key="buy_yi_62", use_container_width=True):
             buy_process("Yemeksepeti", "yi")
 
 with col_u:
-    st.header("🚗 Uber")
+    st.header("🚗 Uber (Ucuz)")
     u_cost, u_count = bot.get_tr_62_data("ub")
     if u_cost:
-        st.write(f"💰 {u_cost} RUB | 📦 {u_count} Adet")
-        if st.button("TR UBER AL", key="buy_ub_62", use_container_width=True):
+        st.write(f"💰 {u_cost} RUB")
+        if st.button("TR UBER AL (DENEME)", key="buy_ub_62", use_container_width=True):
             buy_process("Uber", "ub")
 
 st.divider()
 
 # --- AKTİF İŞLEMLER ---
-st.subheader("📋 İşlem Takibi")
+st.subheader("📋 Geniş Kapsamlı Takip (Tüm SMS'ler taranıyor...)")
 
 to_remove = []
-
-for idx, order in enumerate(st.session_state['active_orders']):
+for order in st.session_state['active_orders']:
     elapsed = int(time.time() - order['time'])
     
-    # --- OTOMATİK İPTAL MANTIĞI ---
     if order['code'] is None and elapsed >= AUTO_CANCEL_SEC:
-        bot.call_api("setStatus", id=order['id'], status=8) # API İptal
-        bot.send_telegram(f"⚠️ <b>OTOMATİK İPTAL</b>\n{order['service']} (+{order['phone']}) numarasına 2:15 içinde SMS gelmediği için iptal edildi.")
+        bot.call_api("setStatus", id=order['id'], status=8)
         to_remove.append(order['id'])
         continue
 
@@ -137,19 +129,22 @@ for idx, order in enumerate(st.session_state['active_orders']):
         c_info, c_copy, c_actions = st.columns([2, 2, 2])
         
         with c_info:
-            st.write(f"**{order['service']}**")
+            st.write(f"**{order['service']} üzerinden Espressolab Bekleniyor**")
             if order['code'] is None:
+                # GENİŞ DİNLEME MANTIĞI: Ham yanıtı al
                 check = bot.call_api("getStatus", id=order['id'])
+                
+                # STATUS_OK:123456 gibi bir yanıt gelirse yakala
                 if "STATUS_OK" in check:
                     order['code'] = check.split(":")[1]
-                    order['status'] = "✅ TAMAMLANDI"
+                    order['status'] = "✅ SMS YAKALANDI!"
                     bot.call_api("setStatus", id=order['id'], status=6)
-                    bot.send_telegram(f"📩 <b>SMS GELDİ!</b>\n{order['service']}: <code>{order['code']}</code>\n+{order['phone']}")
+                    bot.send_telegram(f"🎯 <b>HEDEF YAKALANDI!</b>\n{order['service']} üzerinden gelen kod: <code>{order['code']}</code>\nNumara: +{order['phone']}")
                 else:
-                    order['status'] = f"⌛ {elapsed//60:02d}:{elapsed%60:02d} / 02:15"
+                    order['status'] = f"⌛ {elapsed//60:02d}:{elapsed%60:02d} dinleniyor..."
             
             st.write(f"Durum: {order['status']}")
-            if order['code']: st.success(f"KOD: **{order['code']}**")
+            if order['code']: st.success(f"Gelen Mesaj/Kod: **{order['code']}**")
 
         with c_copy:
             st.code(f"+{order['phone']}", language="text")
@@ -161,21 +156,16 @@ for idx, order in enumerate(st.session_state['active_orders']):
             if ca1.button("➕", key=f"more_{order['id']}"):
                 buy_process(order['service'], order['service_code'])
                 st.rerun()
-            
-            if order['code'] is None:
-                if ca2.button("✖️", key=f"c_{order['id']}"):
-                    bot.call_api("setStatus", id=order['id'], status=8)
-                    to_remove.append(order['id'])
-            
+            if order['code'] is None and ca2.button("✖️", key=f"c_{order['id']}"):
+                bot.call_api("setStatus", id=order['id'], status=8)
+                to_remove.append(order['id'])
             if ca3.button("🗑️", key=f"d_{order['id']}"):
                 to_remove.append(order['id'])
 
-# Listeden temizle
 if to_remove:
     st.session_state['active_orders'] = [o for o in st.session_state['active_orders'] if o['id'] not in to_remove]
     st.rerun()
 
-# Ekran yenileme (Sadece aktif işlem varsa)
 if canli_takip and len(st.session_state['active_orders']) > 0:
     time.sleep(2)
     st.rerun()
