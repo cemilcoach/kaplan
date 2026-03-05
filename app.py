@@ -4,7 +4,7 @@ import time
 import json
 
 # 1. SAYFA AYARLARI
-st.set_page_config(page_title="Multi-SMS Panel (V3)", layout="wide", page_icon="🇹🇷")
+st.set_page_config(page_title="Multi-SMS Panel (V3.1)", layout="wide", page_icon="🇹🇷")
 
 # --- KONFİGÜRASYON ---
 try:
@@ -47,12 +47,18 @@ class OnlineSimBot:
             return r.json()
         except: return {"response": "ERROR"}
 
-    def get_info(self, service):
+    def get_info(self, service_slug):
+        """OnlineSim'de servis verisini doğru derinlikten (ülke kodu altından) çeker."""
         res = self.call_api("getTariffs", country="90")
         try:
-            if str(res.get("response")) == "1":
-                s_data = res.get("services", {}).get(service, {})
-                return s_data.get("price"), s_data.get("count")
+            # OnlineSim verisi genelde {"90": {"services": {...}}} şeklinde gelir
+            country_data = res.get("90", {})
+            services = country_data.get("services", {})
+            
+            # Servisler içinde slug veya isim bazlı arama yap
+            for _, val in services.items():
+                if val.get("slug") == service_slug or val.get("service").lower() == service_slug.lower():
+                    return val.get("price"), val.get("count")
         except: pass
         return None, 0
 
@@ -109,9 +115,6 @@ except:
     st.sidebar.warning("Bakiye okunamadı.")
 
 canli_takip = st.sidebar.toggle("🟢 Canlı Takip", value=True)
-if st.sidebar.button("🚪 Çıkış"):
-    st.session_state["authenticated"] = False
-    st.rerun()
 
 # --- NUMARA ALMA FONKSİYONU ---
 def buy_num(source, s_name, s_code, country):
@@ -133,7 +136,7 @@ def buy_num(source, s_name, s_code, country):
         })
         st.toast(f"✅ {s_name} Alındı ({source})")
     else:
-        st.error(f"Alım Başarısız: {source}")
+        st.error(f"Alım Başarısız ({source}): {r}")
 
 # --- ANA EKRAN ---
 st.title("🇹🇷 Multi-Service SMS Panel")
@@ -186,7 +189,7 @@ with tab3:
         st.write(f"💰 {cost} $ | 📦 Stok: {stock}")
         if st.button("HERO UBER AL", key="h_ub"): buy_num("hero", "Uber", "ub", "62")
 
-# --- İŞLEM TAKİBİ ---
+# --- İŞLEM TAKİBİ VE OTO-İPTAL ---
 st.divider()
 st.subheader("📋 Aktif İşlemler")
 to_remove = []
@@ -219,10 +222,10 @@ for order in st.session_state['active_orders']:
                 
                 if order['code']:
                     order['status'] = "✅ TAMAMLANDI"
-                    st.success(f"KOD: {order['code']}")
                 else: order['status'] = f"⌛ {elapsed}s"
+            
             st.write(f"Durum: {order['status']}")
-            if order['code']: st.write(f"Kod: **{order['code']}**")
+            if order['code']: st.success(f"KOD: {order['code']}")
         with cols[1]:
             st.code(f"+{order['phone']}")
         with cols[2]:
