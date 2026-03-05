@@ -4,183 +4,190 @@ import time
 import json
 
 # 1. SAYFA AYARLARI
-st.set_page_config(page_title="Pro SMS Multi-Panel", layout="wide", page_icon="🇹🇷")
+st.set_page_config(page_title="Multi-SMS Panel (V3)", layout="wide", page_icon="🇹🇷")
 
 # --- KONFİGÜRASYON ---
 try:
     TIGER_API_KEY = st.secrets["TIGER_API_KEY"]
     ONLINESIM_API_KEY = st.secrets["ONLINESIM_API_KEY"]
+    HERO_API_KEY = st.secrets["HERO_API_KEY"]
     PANEL_SIFRESI = st.secrets["PANEL_SIFRESI"]
     TG_TOKEN = st.secrets["TELEGRAM_TOKEN"]
     TG_CHAT_ID = st.secrets["TELEGRAM_CHAT_ID"]
-except KeyError as e:
-    st.error(f"🚨 Secrets dosyası eksik! Eksik anahtar: {e}")
+except Exception as e:
+    st.error(f"🚨 Secrets eksik! Lütfen kontrol edin: {e}")
     st.stop()
 
-# API URL'leri
-TIGER_URL = "https://api.tiger-sms.com/stubs/handler_api.php"
-ONLINESIM_BASE = "https://onlinesim.io/api/"
 AUTO_CANCEL_SEC = 135 
 
-# --- BOT SINIFLARI ---
+# --- API SINIFLARI ---
 
 class TigerSMSBot:
-    def __init__(self, api_key):
-        self.api_key = api_key
-
     def call_api(self, action, **kwargs):
-        params = {"api_key": self.api_key, "action": action}
-        params.update(kwargs)
+        params = {"api_key": TIGER_API_KEY, "action": action, **kwargs}
         try:
-            r = requests.get(TIGER_URL, params=params, timeout=10)
+            r = requests.get("https://api.tiger-sms.com/stubs/handler_api.php", params=params, timeout=10)
             return r.text
         except: return "ERROR"
 
-    def get_tr_data(self, service_code):
-        res = self.call_api("getPrices", service=service_code)
+    def get_info(self, service):
+        res = self.call_api("getPrices", service=service, country="62")
         try:
             data = json.loads(res)
-            # Türkiye ID: 62
-            if "62" in data and service_code in data["62"]:
-                info = data["62"][service_code]
-                return float(info.get('cost')), info.get('count')
-            return None, 0
-        except: return None, 0
+            if "62" in data and service in data["62"]:
+                return data["62"][service].get('cost'), data["62"][service].get('count')
+        except: pass
+        return None, 0
 
 class OnlineSimBot:
-    def __init__(self, api_key):
-        self.api_key = api_key
-
     def call_api(self, endpoint, **kwargs):
-        params = {"apikey": self.api_key, "lang": "en"}
-        params.update(kwargs)
-        url = f"{ONLINESIM_BASE}{endpoint}.php"
+        params = {"apikey": ONLINESIM_API_KEY, "lang": "en", **kwargs}
         try:
-            r = requests.get(url, params=params, timeout=10)
+            r = requests.get(f"https://onlinesim.io/api/{endpoint}.php", params=params, timeout=10)
             return r.json()
-        except Exception as e: 
-            return {"response": "ERROR", "error": str(e)}
+        except: return {"response": "ERROR"}
 
-    def get_stock_data(self, country_id, service_name):
-        # api_getTariffs_php endpoint'i stok ve fiyat verir
-        res = self.call_api("getTariffs", country=country_id)
+    def get_info(self, service):
+        res = self.call_api("getTariffs", country="90")
         try:
             if str(res.get("response")) == "1":
-                # OnlineSim yapısında direkt servis adı üzerinden kontrol
-                services = res.get("services", {})
-                if service_name in services:
-                    item = services[service_name]
-                    return item.get("price"), item.get("count")
-            return None, 0
-        except: return None, 0
+                s_data = res.get("services", {}).get(service, {})
+                return s_data.get("price"), s_data.get("count")
+        except: pass
+        return None, 0
 
-# --- YARDIMCI FONKSİYONLAR ---
+class HeroSMSBot:
+    def call_api(self, action, **kwargs):
+        params = {"api_key": HERO_API_KEY, "action": action, **kwargs}
+        try:
+            r = requests.get("https://hero-sms.com/stubs/handler_api.php", params=params, timeout=10)
+            return r.text
+        except: return "ERROR"
 
-def send_telegram(message):
-    url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
-    payload = {"chat_id": TG_CHAT_ID, "text": message, "parse_mode": "HTML"}
-    try: requests.post(url, data=payload, timeout=5)
-    except: pass
+    def get_info(self, service):
+        res = self.call_api("getPrices", service=service, country="62")
+        try:
+            data = json.loads(res)
+            if "62" in data and service in data["62"]:
+                return data["62"][service].get('cost'), data["62"][service].get('count')
+        except: pass
+        return None, 0
 
 # --- GİRİŞ KONTROLÜ ---
 if "authenticated" not in st.session_state:
     st.session_state["authenticated"] = False
 
 if not st.session_state["authenticated"]:
-    st.title("🔒 Pro Multi-SMS Panel Giriş")
-    with st.form("login_form"):
-        pwd_input = st.text_input("Şifre:", type="password")
-        submit = st.form_submit_button("Giriş Yap", use_container_width=True)
-        if submit:
-            if pwd_input.strip() == PANEL_SIFRESI:
+    st.title("🔒 Pro SMS Panel Giriş")
+    with st.form("login"):
+        pwd = st.text_input("Şifre:", type="password")
+        if st.form_submit_button("Giriş", use_container_width=True):
+            if pwd == PANEL_SIFRESI:
                 st.session_state["authenticated"] = True
                 st.rerun()
-            else: st.error("❌ Hatalı Şifre!")
+            else: st.error("Hatalı Şifre!")
     st.stop()
 
 # --- BAŞLATMA ---
-tiger = TigerSMSBot(TIGER_API_KEY)
-osim = OnlineSimBot(ONLINESIM_API_KEY)
+tiger = TigerSMSBot()
+osim = OnlineSimBot()
+hero = HeroSMSBot()
 
 if 'active_orders' not in st.session_state:
     st.session_state['active_orders'] = []
 
 # --- SIDEBAR ---
-st.sidebar.title("🤖 Panel Kontrol")
-
-# Bakiyeler
+st.sidebar.title("💰 Bakiyeler")
 try:
-    t_bal_res = tiger.call_api("getBalance")
-    t_bal = t_bal_res.split(":")[1] if "ACCESS_BALANCE" in t_bal_res else "0"
-    st.sidebar.metric("🐯 Tiger Bakiye", f"{t_bal} RUB")
-    
-    o_bal_res = osim.call_api("getBalance")
-    o_bal = o_bal_res.get("balance", "0") if str(o_bal_res.get("response")) == "1" else "0"
-    st.sidebar.metric("🔵 OnlineSim Bakiye", f"{o_bal} $")
+    t_bal = tiger.call_api("getBalance").split(":")[1]
+    st.sidebar.metric("🐯 Tiger", f"{t_bal} RUB")
+    o_bal = osim.call_api("getBalance").get("balance", "0")
+    st.sidebar.metric("🔵 OnlineSim", f"{o_bal} $")
+    h_bal = hero.call_api("getBalance").split(":")[1]
+    st.sidebar.metric("🦸 Hero-SMS", f"{h_bal} $")
 except:
-    st.sidebar.error("Bakiye hatası!")
+    st.sidebar.warning("Bakiye okunamadı.")
 
 canli_takip = st.sidebar.toggle("🟢 Canlı Takip", value=True)
-if st.sidebar.button("🚪 Çıkış", use_container_width=True):
+if st.sidebar.button("🚪 Çıkış"):
     st.session_state["authenticated"] = False
     st.rerun()
 
-# --- ANA PANEL ---
-st.title("🇹🇷 Multi-Service SMS Panel")
-
-tab1, tab2 = st.tabs(["🐯 Tiger SMS", "☕ OnlineSim"])
-
-def buy_number(source, s_name, s_code, country_id):
+# --- NUMARA ALMA FONKSİYONU ---
+def buy_num(source, s_name, s_code, country):
+    res_id, res_num = None, None
     if source == "tiger":
-        res = tiger.call_api("getNumber", service=s_code, country=country_id)
-        if "ACCESS_NUMBER" in res:
-            parts = res.split(":")
-            st.session_state['active_orders'].append({
-                "id": parts[1], "phone": parts[2], "service": s_name, "source": "tiger",
-                "s_code": s_code, "time": time.time(), "status": "Bekliyor", "code": None
-            })
-            st.toast(f"✅ {s_name} Alındı!")
-        else: st.error(f"Hata: {res}")
+        r = tiger.call_api("getNumber", service=s_code, country=country)
+        if "ACCESS_NUMBER" in r: res_id, res_num = r.split(":")[1], r.split(":")[2]
+    elif source == "hero":
+        r = hero.call_api("getNumber", service=s_code, country=country)
+        if "ACCESS_NUMBER" in r: res_id, res_num = r.split(":")[1], r.split(":")[2]
     elif source == "onlinesim":
-        res = osim.call_api("getNum", service=s_code, country=country_id)
-        if str(res.get("response")) == "1":
-            st.session_state['active_orders'].append({
-                "id": res['tzid'], "phone": res['number'], "service": s_name, "source": "onlinesim",
-                "s_code": s_code, "time": time.time(), "status": "Bekliyor", "code": None
-            })
-            st.toast(f"✅ {s_name} Alındı!")
-        else: st.error(f"OnlineSim Hatası: {res.get('response')}")
+        r = osim.call_api("getNum", service=s_code, country=country)
+        if str(r.get("response")) == "1": res_id, res_num = r['tzid'], r['number']
 
-# TAB 1: TIGER SMS
+    if res_id:
+        st.session_state['active_orders'].append({
+            "id": res_id, "phone": res_num, "service": s_name, "source": source,
+            "time": time.time(), "status": "Bekliyor", "code": None
+        })
+        st.toast(f"✅ {s_name} Alındı ({source})")
+    else:
+        st.error(f"Alım Başarısız: {source}")
+
+# --- ANA EKRAN ---
+st.title("🇹🇷 Multi-Service SMS Panel")
+tab1, tab2, tab3 = st.tabs(["🐯 Tiger SMS", "🔵 OnlineSim", "🦸 Hero-SMS"])
+
+# TIGER TAB
 with tab1:
     c1, c2 = st.columns(2)
     with c1:
+        cost, stock = tiger.get_info("yi")
         st.subheader("🍔 Yemeksepeti")
-        y_cost, y_count = tiger.get_tr_data("yi")
-        st.write(f"💰 **{y_cost} RUB** | 📦 Stok: **{y_count} Adet**")
-        if st.button("YEMEKSEPETİ AL", key="tg_yi", use_container_width=True):
-            buy_number("tiger", "Yemeksepeti", "yi", "62")
+        st.write(f"💰 {cost} RUB | 📦 Stok: {stock}")
+        if st.button("TIGER YEMEK AL", key="t_yi"): buy_num("tiger", "Yemeksepeti", "yi", "62")
     with c2:
+        cost, stock = tiger.get_info("ub")
         st.subheader("🚗 Uber")
-        u_cost, u_count = tiger.get_tr_data("ub")
-        st.write(f"💰 **{u_cost} RUB** | 📦 Stok: **{u_count} Adet**")
-        if st.button("UBER AL", key="tg_ub", use_container_width=True):
-            buy_number("tiger", "Uber", "ub", "62")
+        st.write(f"💰 {cost} RUB | 📦 Stok: {stock}")
+        if st.button("TIGER UBER AL", key="t_ub"): buy_num("tiger", "Uber", "ub", "62")
 
-# TAB 2: ONLINESIM (ESPRESSOLAB)
+# ONLINESIM TAB
 with tab2:
-    st.subheader("☕ Espressolab (OnlineSim)")
-    # OnlineSim'den Türkiye (90) Espressolab stok verisi çekme
-    e_price, e_count = osim.get_stock_data("90", "espressolab")
-    
-    st.write(f"💰 **{e_price} $** | 📦 Stok: **{e_count} Adet**")
-    
-    if st.button("☕ ESPRESSOLAB AL (TR)", key="os_es", use_container_width=True):
-        buy_number("onlinesim", "Espressolab", "espressolab", "90")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        cost, stock = osim.get_info("yemeksepeti")
+        st.subheader("🍔 Yemeksepeti")
+        st.write(f"💰 {cost} $ | 📦 Stok: {stock}")
+        if st.button("OSIM YEMEK AL", key="o_yi"): buy_num("onlinesim", "Yemeksepeti", "yemeksepeti", "90")
+    with c2:
+        cost, stock = osim.get_info("uber")
+        st.subheader("🚗 Uber")
+        st.write(f"💰 {cost} $ | 📦 Stok: {stock}")
+        if st.button("OSIM UBER AL", key="o_ub"): buy_num("onlinesim", "Uber", "uber", "90")
+    with c3:
+        cost, stock = osim.get_info("espressolab")
+        st.subheader("☕ Espressolab")
+        st.write(f"💰 {cost} $ | 📦 Stok: {stock}")
+        if st.button("OSIM KAHVE AL", key="o_es"): buy_num("onlinesim", "Espressolab", "espressolab", "90")
 
-st.divider()
+# HERO-SMS TAB
+with tab3:
+    c1, c2 = st.columns(2)
+    with c1:
+        cost, stock = hero.get_info("yi")
+        st.subheader("🍔 Yemeksepeti")
+        st.write(f"💰 {cost} $ | 📦 Stok: {stock}")
+        if st.button("HERO YEMEK AL", key="h_yi"): buy_num("hero", "Yemeksepeti", "yi", "62")
+    with c2:
+        cost, stock = hero.get_info("ub")
+        st.subheader("🚗 Uber")
+        st.write(f"💰 {cost} $ | 📦 Stok: {stock}")
+        if st.button("HERO UBER AL", key="h_ub"): buy_num("hero", "Uber", "ub", "62")
 
 # --- İŞLEM TAKİBİ ---
+st.divider()
 st.subheader("📋 Aktif İşlemler")
 to_remove = []
 
@@ -189,53 +196,42 @@ for order in st.session_state['active_orders']:
     
     # OTOMATİK İPTAL
     if order['code'] is None and elapsed >= AUTO_CANCEL_SEC:
-        if order['source'] == "tiger":
-            tiger.call_api("setStatus", id=order['id'], status=8)
-        else:
-            osim.call_api("setOperationRevise", tzid=order['id'])
+        if order['source'] == "tiger": tiger.call_api("setStatus", id=order['id'], status=8)
+        elif order['source'] == "hero": hero.call_api("setStatus", id=order['id'], status=8)
+        else: osim.call_api("setOperationRevise", tzid=order['id'])
         to_remove.append(order['id'])
         continue
 
     with st.container(border=True):
-        c1, c2, c3 = st.columns([2, 2, 1])
-        with c1:
+        cols = st.columns([2, 2, 1])
+        with cols[0]:
             st.write(f"**{order['service']}** ({order['source'].upper()})")
             if order['code'] is None:
                 if order['source'] == "tiger":
-                    check = tiger.call_api("getStatus", id=order['id'])
-                    if "STATUS_OK" in check:
-                        order['code'] = check.split(":")[1]
+                    res = tiger.call_api("getStatus", id=order['id'])
+                    if "STATUS_OK" in res: order['code'] = res.split(":")[1]
+                elif order['source'] == "hero":
+                    res = hero.call_api("getStatus", id=order['id'])
+                    if "STATUS_OK" in res: order['code'] = res.split(":")[1]
                 else:
-                    check = osim.call_api("getState", tzid=order['id'])
-                    if str(check.get("response")) == "1" and "msg" in check:
-                        order['code'] = check['msg']
-
+                    res = osim.call_api("getState", tzid=order['id'])
+                    if str(res.get("response")) == "1" and "msg" in res: order['code'] = res['msg']
+                
                 if order['code']:
                     order['status'] = "✅ TAMAMLANDI"
-                    send_telegram(f"📩 <b>SMS GELDİ!</b>\n{order['service']}: <code>{order['code']}</code>\n+{order['phone']}")
-                else:
-                    order['status'] = f"⌛ {elapsed//60:02d}:{elapsed%60:02d}"
-            
+                    st.success(f"KOD: {order['code']}")
+                else: order['status'] = f"⌛ {elapsed}s"
             st.write(f"Durum: {order['status']}")
-            if order['code']: st.success(f"KOD: **{order['code']}**")
-
-        with c2:
+            if order['code']: st.write(f"Kod: **{order['code']}**")
+        with cols[1]:
             st.code(f"+{order['phone']}")
-            # Temiz numara (kopyalama kolaylığı için)
-            st.code(order['phone'][2:] if order['phone'].startswith("90") else order['phone'])
+        with cols[2]:
+            if st.button("🗑️", key=f"del_{order['id']}"): to_remove.append(order['id'])
 
-        with c3:
-            if st.button("🗑️", key=f"del_{order['id']}"):
-                if order['code'] is None:
-                    if order['source'] == "tiger": tiger.call_api("setStatus", id=order['id'], status=8)
-                    else: osim.call_api("setOperationRevise", tzid=order['id'])
-                to_remove.append(order['id'])
-
-# Temizlik ve Yenileme
 if to_remove:
     st.session_state['active_orders'] = [o for o in st.session_state['active_orders'] if o['id'] not in to_remove]
     st.rerun()
 
-if canli_takip and len(st.session_state['active_orders']) > 0:
+if canli_takip and st.session_state['active_orders']:
     time.sleep(5)
     st.rerun()
