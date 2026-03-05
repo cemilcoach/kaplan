@@ -4,7 +4,7 @@ import time
 import json
 
 # 1. SAYFA AYARLARI
-st.set_page_config(page_title="Multi-SMS Panel V3.4 - Fast TG", layout="wide", page_icon="🇹🇷")
+st.set_page_config(page_title="Multi-SMS Panel V3.6", layout="wide", page_icon="🇹🇷")
 
 # --- KONFİGÜRASYON ---
 try:
@@ -20,16 +20,16 @@ except Exception as e:
 
 AUTO_CANCEL_SEC = 135 
 
-# --- HIZLI TELEGRAM FONKSİYONU ---
+# --- GELİŞMİŞ TELEGRAM FONKSİYONU ---
 def send_telegram_instant(message):
-    """Mesajı bekletmeden anında iletmek için optimize edildi."""
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
-    payload = {"chat_id": TG_CHAT_ID, "text": message, "parse_mode": "HTML"}
+    payload = {"chat_id": str(TG_CHAT_ID), "text": message, "parse_mode": "HTML"}
     try:
-        # Timeout süresini düşürerek ağ takılmalarını önleriz
-        requests.post(url, data=payload, timeout=3)
-    except:
-        pass
+        response = requests.post(url, data=payload, timeout=5)
+        res_data = response.json()
+        return res_data.get("ok"), res_data.get("description", "Başarılı")
+    except Exception as e:
+        return False, str(e)
 
 # --- API SINIFLARI ---
 class TigerSMSBot:
@@ -58,13 +58,21 @@ class OnlineSimBot:
         except: return {"response": "ERROR"}
 
     def get_info(self, service_slug):
+        """OnlineSim Türkiye (90) verisini hiyerarşik olarak çeker."""
+        # Dökümana göre getTariffs çağrısı ülke parametresi ile yapılır
         res = self.call_api("getTariffs", country="90")
         try:
-            # OnlineSim verisi ülke kodu (90) altındadır
+            # Yanıt yapısı: {"90": {"services": {"service_name": {...}}}}
             if "90" in res:
                 services = res["90"].get("services", {})
-                for _, val in services.items():
-                    if val.get("slug") == service_slug or val.get("service").lower() == service_slug.lower():
+                # OnlineSim'de servis anahtarı genellikle slug ile aynıdır
+                if service_slug in services:
+                    val = services[service_slug]
+                    return val.get("price"), val.get("count")
+                
+                # Eğer anahtar olarak bulamazsa içerde ara (Yemeksepeti vb. için)
+                for key, val in services.items():
+                    if val.get("slug") == service_slug or key.lower() == service_slug.lower():
                         return val.get("price"), val.get("count")
         except: pass
         return None, 0
@@ -111,7 +119,6 @@ if 'active_orders' not in st.session_state:
 
 # --- SIDEBAR ---
 st.sidebar.title("🤖 Panel Kontrol")
-
 try:
     t_bal_raw = tiger.call_api("getBalance")
     t_bal = t_bal_raw.split(":")[1] if "ACCESS_BALANCE" in t_bal_raw else "0"
@@ -131,10 +138,15 @@ if st.sidebar.button("🔄 Stok & Bakiye Güncelle", use_container_width=True):
 
 if st.sidebar.button("🔔 Telegram Botu Test Et", use_container_width=True):
     msg = f"🚀 <b>Test</b>\nTiger: {t_bal} RUB\nOSim: {o_bal} $\nHero: {h_bal} $"
-    send_telegram_instant(msg)
-    st.sidebar.success("Test gönderildi!")
+    success, detail = send_telegram_instant(msg)
+    if success: st.sidebar.success("Mesaj gitti!")
+    else: st.sidebar.error(f"Hata: {detail}")
 
+st.sidebar.divider()
 canli_takip = st.sidebar.toggle("🟢 Canlı Takip", value=True)
+if st.sidebar.button("🚪 Çıkış", use_container_width=True):
+    st.session_state["authenticated"] = False
+    st.rerun()
 
 # --- NUMARA ALMA ---
 def buy_num(source, s_name, s_code, country):
@@ -150,6 +162,7 @@ def buy_num(source, s_name, s_code, country):
             parts = r.split(":")
             res_id, res_num = parts[1], parts[2]
     elif source == "onlinesim":
+        # OnlineSim alımında country parametresi E.164 formatında olmalı (Türkiye=90)
         r = osim.call_api("getNum", service=s_code, country=country)
         if str(r.get("response")) == "1" and "tzid" in r:
             res_id = r.get("tzid")
@@ -174,47 +187,53 @@ with tabs[0]:
     c1, c2 = st.columns(2)
     with c1:
         cost, stock = tiger.get_info("yi")
-        st.write(f"🍔 Yemek: {cost} RUB | Stok: {stock}")
+        st.subheader("🍔 Yemeksepeti")
+        st.write(f"💰 {cost} RUB | 📦 Stok: {stock}")
         if st.button("TIGER YEMEK", key="t1"): buy_num("tiger", "Yemeksepeti", "yi", "62")
     with c2:
         cost, stock = tiger.get_info("ub")
-        st.write(f"🚗 Uber: {cost} RUB | Stok: {stock}")
+        st.subheader("🚗 Uber")
+        st.write(f"💰 {cost} RUB | 📦 Stok: {stock}")
         if st.button("TIGER UBER", key="t2"): buy_num("tiger", "Uber", "ub", "62")
 
 with tabs[1]:
     c1, c2, c3 = st.columns(3)
     with c1:
         cost, stock = osim.get_info("yemeksepeti")
-        st.write(f"🍔 Yemek: {cost} $ | Stok: {stock}")
+        st.subheader("🍔 Yemeksepeti")
+        st.write(f"💰 {cost} $ | 📦 Stok: {stock}")
         if st.button("OSIM YEMEK", key="o1"): buy_num("onlinesim", "Yemeksepeti", "yemeksepeti", "90")
     with c2:
         cost, stock = osim.get_info("uber")
-        st.write(f"🚗 Uber: {cost} $ | Stok: {stock}")
+        st.subheader("🚗 Uber")
+        st.write(f"💰 {cost} $ | 📦 Stok: {stock}")
         if st.button("OSIM UBER", key="o2"): buy_num("onlinesim", "Uber", "uber", "90")
     with c3:
         cost, stock = osim.get_info("espressolab")
-        st.write(f"☕ Kahve: {cost} $ | Stok: {stock}")
+        st.subheader("☕ Espressolab")
+        st.write(f"💰 {cost} $ | 📦 Stok: {stock}")
         if st.button("OSIM KAHVE", key="o3"): buy_num("onlinesim", "Espressolab", "espressolab", "90")
 
 with tabs[2]:
     c1, c2 = st.columns(2)
     with c1:
         cost, stock = hero.get_info("yi")
-        st.write(f"🍔 Yemek: {cost} $ | Stok: {stock}")
+        st.subheader("🍔 Yemeksepeti")
+        st.write(f"💰 {cost} $ | 📦 Stok: {stock}")
         if st.button("HERO YEMEK", key="h1"): buy_num("hero", "Yemeksepeti", "yi", "62")
     with c2:
         cost, stock = hero.get_info("ub")
-        st.write(f"🚗 Uber: {cost} $ | Stok: {stock}")
+        st.subheader("🚗 Uber")
+        st.write(f"💰 {cost} $ | 📦 Stok: {stock}")
         if st.button("HERO UBER", key="h2"): buy_num("hero", "Uber", "ub", "62")
 
-# --- İŞLEM TAKİBİ (INSTANT NOTIFY) ---
+# --- İŞLEM TAKİBİ ---
 st.divider()
 st.subheader("📋 Aktif İşlemler")
 to_remove = []
 
 for order in st.session_state['active_orders']:
     elapsed = int(time.time() - order['time'])
-    
     if order['code'] is None and elapsed >= AUTO_CANCEL_SEC:
         if order['source'] == "tiger": tiger.call_api("setStatus", id=order['id'], status=8)
         elif order['source'] == "hero": hero.call_api("setStatus", id=order['id'], status=8)
@@ -227,7 +246,6 @@ for order in st.session_state['active_orders']:
         with cols[0]:
             st.write(f"**{order['service']}** ({order['source'].upper()})")
             if order['code'] is None:
-                # Durum Kontrolü
                 if order['source'] == "tiger":
                     res = tiger.call_api("getStatus", id=order['id'])
                     if "STATUS_OK" in res: order['code'] = res.split(":")[1]
@@ -240,9 +258,8 @@ for order in st.session_state['active_orders']:
                 
                 if order['code']:
                     order['status'] = "✅ TAMAMLANDI"
-                    # ANINDA GÖNDERİM
                     send_telegram_instant(f"📩 <b>{order['service']}</b>\nKod: <code>{order['code']}</code>\nNumara: +{order['phone']}")
-                    st.rerun() # Kod geldiği an ekranı yenile ki saniyeleri bekleme
+                    st.rerun()
                 else: order['status'] = f"⌛ {elapsed}s"
             
             st.write(f"Durum: {order['status']}")
@@ -257,6 +274,6 @@ if to_remove:
     st.rerun()
 
 if canli_takip and st.session_state['active_orders']:
-    time.sleep(2) # 5 saniyeden 2 saniyeye düşürerek kontrol hızını artırdık
+    time.sleep(2)
     st.rerun()
  
