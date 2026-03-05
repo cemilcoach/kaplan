@@ -40,6 +40,7 @@ class TigerSMSBot:
         res = self.call_api("getPrices", service=service_code)
         try:
             data = json.loads(res)
+            # Türkiye ID: 62
             if "62" in data and service_code in data["62"]:
                 info = data["62"][service_code]
                 return float(info.get('cost')), info.get('count')
@@ -56,10 +57,22 @@ class OnlineSimBot:
         url = f"{ONLINESIM_BASE}{endpoint}.php"
         try:
             r = requests.get(url, params=params, timeout=10)
-            # Dökümana göre JSON dönmesi bekleniyor
             return r.json()
         except Exception as e: 
             return {"response": "ERROR", "error": str(e)}
+
+    def get_stock_data(self, country_id, service_name):
+        # api_getTariffs_php endpoint'i stok ve fiyat verir
+        res = self.call_api("getTariffs", country=country_id)
+        try:
+            if str(res.get("response")) == "1":
+                # OnlineSim yapısında direkt servis adı üzerinden kontrol
+                services = res.get("services", {})
+                if service_name in services:
+                    item = services[service_name]
+                    return item.get("price"), item.get("count")
+            return None, 0
+        except: return None, 0
 
 # --- YARDIMCI FONKSİYONLAR ---
 
@@ -95,18 +108,17 @@ if 'active_orders' not in st.session_state:
 # --- SIDEBAR ---
 st.sidebar.title("🤖 Panel Kontrol")
 
-# Bakiyeleri try-except ile alalım ki API hatası tüm paneli dondurmasın
+# Bakiyeler
 try:
     t_bal_res = tiger.call_api("getBalance")
-    t_bal = t_bal_res.split(":")[1] if "ACCESS_BALANCE" in t_bal_res else "Hata"
+    t_bal = t_bal_res.split(":")[1] if "ACCESS_BALANCE" in t_bal_res else "0"
     st.sidebar.metric("🐯 Tiger Bakiye", f"{t_bal} RUB")
     
     o_bal_res = osim.call_api("getBalance")
-    # OnlineSim dökümanında getBalance JSON döner
-    o_bal = o_bal_res.get("balance", "Hata") if str(o_bal_res.get("response")) == "1" else "Hata"
-    st.sidebar.metric("🔵 OnlineSim Bakiye", f"{o_bal} RUB")
+    o_bal = o_bal_res.get("balance", "0") if str(o_bal_res.get("response")) == "1" else "0"
+    st.sidebar.metric("🔵 OnlineSim Bakiye", f"{o_bal} $")
 except:
-    st.sidebar.error("Bakiye çekilemedi.")
+    st.sidebar.error("Bakiye hatası!")
 
 canli_takip = st.sidebar.toggle("🟢 Canlı Takip", value=True)
 if st.sidebar.button("🚪 Çıkış", use_container_width=True):
@@ -129,9 +141,7 @@ def buy_number(source, s_name, s_code, country_id):
             })
             st.toast(f"✅ {s_name} Alındı!")
         else: st.error(f"Hata: {res}")
-    
     elif source == "onlinesim":
-        # OnlineSim api_getNum_php endpoint kullanımı
         res = osim.call_api("getNum", service=s_code, country=country_id)
         if str(res.get("response")) == "1":
             st.session_state['active_orders'].append({
@@ -139,22 +149,32 @@ def buy_number(source, s_name, s_code, country_id):
                 "s_code": s_code, "time": time.time(), "status": "Bekliyor", "code": None
             })
             st.toast(f"✅ {s_name} Alındı!")
-        else: st.error(f"OnlineSim Hatası: {res.get('response', 'Bilinmiyor')}")
+        else: st.error(f"OnlineSim Hatası: {res.get('response')}")
 
+# TAB 1: TIGER SMS
 with tab1:
     c1, c2 = st.columns(2)
     with c1:
+        st.subheader("🍔 Yemeksepeti")
         y_cost, y_count = tiger.get_tr_data("yi")
-        if st.button("🍔 YEMEKSEPETİ AL", key="tg_yi", use_container_width=True):
+        st.write(f"💰 **{y_cost} RUB** | 📦 Stok: **{y_count} Adet**")
+        if st.button("YEMEKSEPETİ AL", key="tg_yi", use_container_width=True):
             buy_number("tiger", "Yemeksepeti", "yi", "62")
     with c2:
+        st.subheader("🚗 Uber")
         u_cost, u_count = tiger.get_tr_data("ub")
-        if st.button("🚗 UBER AL", key="tg_ub", use_container_width=True):
+        st.write(f"💰 **{u_cost} RUB** | 📦 Stok: **{u_count} Adet**")
+        if st.button("UBER AL", key="tg_ub", use_container_width=True):
             buy_number("tiger", "Uber", "ub", "62")
 
+# TAB 2: ONLINESIM (ESPRESSOLAB)
 with tab2:
     st.subheader("☕ Espressolab (OnlineSim)")
-    # Espressolab için OnlineSim servis kodu 'espressolab'
+    # OnlineSim'den Türkiye (90) Espressolab stok verisi çekme
+    e_price, e_count = osim.get_stock_data("90", "espressolab")
+    
+    st.write(f"💰 **{e_price} $** | 📦 Stok: **{e_count} Adet**")
+    
     if st.button("☕ ESPRESSOLAB AL (TR)", key="os_es", use_container_width=True):
         buy_number("onlinesim", "Espressolab", "espressolab", "90")
 
@@ -167,11 +187,11 @@ to_remove = []
 for order in st.session_state['active_orders']:
     elapsed = int(time.time() - order['time'])
     
+    # OTOMATİK İPTAL
     if order['code'] is None and elapsed >= AUTO_CANCEL_SEC:
         if order['source'] == "tiger":
             tiger.call_api("setStatus", id=order['id'], status=8)
         else:
-            # OnlineSim iptal için setOperationRevise kullanılır
             osim.call_api("setOperationRevise", tzid=order['id'])
         to_remove.append(order['id'])
         continue
@@ -186,28 +206,36 @@ for order in st.session_state['active_orders']:
                     if "STATUS_OK" in check:
                         order['code'] = check.split(":")[1]
                 else:
-                    # OnlineSim durum sorgulama
                     check = osim.call_api("getState", tzid=order['id'])
                     if str(check.get("response")) == "1" and "msg" in check:
                         order['code'] = check['msg']
 
                 if order['code']:
                     order['status'] = "✅ TAMAMLANDI"
-                    send_telegram(f"📩 <b>SMS!</b> {order['service']}: {order['code']}")
+                    send_telegram(f"📩 <b>SMS GELDİ!</b>\n{order['service']}: <code>{order['code']}</code>\n+{order['phone']}")
                 else:
-                    order['status'] = f"⌛ {elapsed}s / {AUTO_CANCEL_SEC}s"
+                    order['status'] = f"⌛ {elapsed//60:02d}:{elapsed%60:02d}"
+            
             st.write(f"Durum: {order['status']}")
-            if order['code']: st.success(f"KOD: {order['code']}")
+            if order['code']: st.success(f"KOD: **{order['code']}**")
+
         with c2:
             st.code(f"+{order['phone']}")
+            # Temiz numara (kopyalama kolaylığı için)
+            st.code(order['phone'][2:] if order['phone'].startswith("90") else order['phone'])
+
         with c3:
             if st.button("🗑️", key=f"del_{order['id']}"):
+                if order['code'] is None:
+                    if order['source'] == "tiger": tiger.call_api("setStatus", id=order['id'], status=8)
+                    else: osim.call_api("setOperationRevise", tzid=order['id'])
                 to_remove.append(order['id'])
 
+# Temizlik ve Yenileme
 if to_remove:
     st.session_state['active_orders'] = [o for o in st.session_state['active_orders'] if o['id'] not in to_remove]
     st.rerun()
 
 if canli_takip and len(st.session_state['active_orders']) > 0:
-    time.sleep(5) # Yenileme süresini 5 saniyeye çıkararak yükü azalttık
+    time.sleep(5)
     st.rerun()
