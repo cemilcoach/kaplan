@@ -1,129 +1,113 @@
 import streamlit as st
 import requests
 import time
-import json
-from concurrent.futures import ThreadPoolExecutor
+from fp.fp import FreeProxy
 
 # --- 1. AYARLAR ---
-st.set_page_config(page_title="SMS Panel V4.6 - Anti-Freeze", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="Pro SMS Panel V6.1", layout="wide")
 
 try:
     S = st.secrets
     KEYS = {
-        "tiger": S["TIGER_API_KEY"], "osim": S["ONLINESIM_API_KEY"], "hero": S["HERO_API_KEY"],
-        "pass": S["PANEL_SIFRESI"], "tg_token": S["TELEGRAM_TOKEN"], "tg_chat": S["TELEGRAM_CHAT_ID"]
+        "t": S["TIGER_API_KEY"], "o": S["ONLINESIM_API_KEY"], "h": S["HERO_API_KEY"],
+        "p": S["PANEL_SIFRESI"], "tg": S["TELEGRAM_TOKEN"], "cid": S["TELEGRAM_CHAT_ID"]
     }
-except Exception as e:
-    st.error("Secrets Eksik!"); st.stop()
+except:
+    st.error("Secrets bulunamadı!"); st.stop()
 
-# --- 2. SESSION STATE ---
-for k, v in {"auth": False, "orders": [], "balances": {}, "stocks": {}, "osim_err": ""}.items():
-    if k not in st.session_state: st.session_state[k] = v
-
-# --- 3. GÜVENLİ VE HIZLI ÇEKİRDEK ---
-def fetch_api(url, params, is_json=False, timeout=3): # Timeout 3 saniyeye çekildi (Donmayı önler)
+# --- 2. AKILLI PROXY VE API MOTORU ---
+def get_fresh_proxy():
+    """Çalışan bir HTTPS proxy bulana kadar dener."""
     try:
-        r = requests.get(url, params=params, timeout=timeout)
-        if r.status_code == 200: return r.json() if is_json else r.text
-        return "ERR_HTTP"
-    except: return "TIMEOUT"
+        return FreeProxy(https=True, rand=True, timeout=1).get()
+    except:
+        return None
 
-def send_tg(msg):
-    url = f"https://api.telegram.org/bot{KEYS['tg_token']}/sendMessage"
-    try: requests.post(url, data={"chat_id": str(KEYS['tg_chat']), "text": msg, "parse_mode": "HTML"}, timeout=2)
-    except: pass
-
-# --- 4. PARALEL VERİ ÇEKME (HIZLI) ---
-def refresh_data():
-    urls = {
-        "t_b": ("https://api.tiger-sms.com/stubs/handler_api.php", {"api_key": KEYS["tiger"], "action": "getBalance"}, False),
-        "h_b": ("https://hero-sms.com/stubs/handler_api.php", {"api_key": KEYS["hero"], "action": "getBalance"}, False),
-        "o_b": ("https://onlinesim.io/api/getBalance.php", {"apikey": KEYS["osim"]}, True),
-        "t_s": ("https://api.tiger-sms.com/stubs/handler_api.php", {"api_key": KEYS["tiger"], "action": "getPrices", "country": "62"}, True),
-        "h_s": ("https://hero-sms.com/stubs/handler_api.php", {"api_key": KEYS["hero"], "action": "getPrices", "country": "62"}, True),
-        "o_s": ("https://onlinesim.io/api/getTariffs.php", {"apikey": KEYS["osim"], "country": "90"}, True)
-    }
+def osim_request(url, params):
+    """Sadece OnlineSim için proxy kullanır ve hata alursa sistemi tetikler."""
+    p_url = get_fresh_proxy()
+    proxies = {"http": p_url, "https": p_url} if p_url else None
     
-    with ThreadPoolExecutor(max_workers=6) as ex:
-        res = {k: ex.submit(fetch_api, u, p, j, (8 if "osim" in k or "o_" in k else 3)).result() for k, (u, p, j) in urls.items()}
+    try:
+        r = requests.get(url, params=params, proxies=proxies, timeout=8)
+        return r.json()
+    except Exception:
+        return {"error": "proxy_failed"}
 
-    # Bakiyeler
-    st.session_state.balances = {
-        "tiger": res["t_b"].split(":")[1] if "ACCESS" in res["t_b"] else "OFFLINE",
-        "hero": res["h_b"].split(":")[1] if "ACCESS" in res["h_b"] else "OFFLINE",
-        "osim": str(res["o_b"].get("balance", "OFFLINE")) if isinstance(res["o_b"], dict) else "OFFLINE"
-    }
-    
-    # Stoklar
-    st.session_state.stocks["tiger"] = res["t_s"].get("62", {}) if isinstance(res["t_s"], dict) else {}
-    st.session_state.stocks["hero"] = res["h_s"].get("62", {}) if isinstance(res["h_s"], dict) else {}
-    
-    # OnlineSim Özel (Hiyerarşi Fix)
-    o_data = res["o_s"]
-    if isinstance(o_data, dict):
-        st.session_state.stocks["osim"] = o_data.get("90", {}).get("services", {}) or o_data.get("services", {})
-    else: st.session_state.stocks["osim"] = {}
+# --- 3. SESSION STATE ---
+if 'auth' not in st.session_state: st.session_state.auth = False
+if 'order' not in st.session_state: st.session_state.order = None
+if 'osim_bal' not in st.session_state: st.session_state.osim_bal = "Yükleniyor..."
 
-# --- 5. GİRİŞ ---
+# --- 4. GİRİŞ ---
 if not st.session_state.auth:
-    with st.form("l"):
-        if st.form_submit_button("Giriş") and st.text_input("Şifre", type="password") == KEYS["pass"]:
-            st.session_state.auth = True; refresh_data(); st.rerun()
+    st.title("🔐 Pro SMS Giriş")
+    pwd = st.text_input("Şifre", type="password")
+    if st.button("Giriş") and pwd == KEYS["p"]:
+        st.session_state.auth = True; st.rerun()
     st.stop()
 
-# --- 6. SIDEBAR ---
+# --- 5. SIDEBAR ---
 with st.sidebar:
     st.title("🤖 Kontrol")
-    b = st.session_state.balances
-    st.metric("🐯 Tiger", f"{b.get('tiger')} RUB")
-    st.metric("🦸 Hero", f"{b.get('hero')} $")
-    st.metric("🔵 OnlineSim", f"{b.get('osim')} $")
-    if st.button("🔄 Verileri Yenile"): refresh_data(); st.rerun()
-    if st.button("🔔 Bot Test"): send_tg("Bot Aktif!"); st.success("Ok")
-    canli = st.toggle("🟢 Takip", value=True)
+    
+    # Tiger & Hero (Direkt bağlantı - Hızlı)
+    t_b_raw = requests.get("https://api.tiger-sms.com/stubs/handler_api.php", {"api_key": KEYS["t"], "action": "getBalance"}).text
+    h_b_raw = requests.get("https://hero-sms.com/stubs/handler_api.php", {"api_key": KEYS["h"], "action": "getBalance"}).text
+    
+    # OnlineSim (Proxy ile - Eğer banlıysa otomatik yenile)
+    o_res = osim_request("https://onlinesim.io/api/getBalance.php", {"apikey": KEYS["o"]})
+    
+    if "error" in o_res or o_res.get("response") == "error":
+        st.warning("🔄 OnlineSim Banlı/Yavaş. Yeni IP deneniyor...")
+        time.sleep(1)
+        st.rerun() # IP ban varsa veya proxy çalışmadıysa otomatik yenile
+    else:
+        st.session_state.osim_bal = str(o_res.get("balance", "0"))
 
-# --- 7. ANA PANEL ---
+    st.metric("🐯 Tiger", f"{t_b_raw.split(':')[1] if 'ACCESS' in t_b_raw else '0'} RUB")
+    st.metric("🦸 Hero", f"{h_b_raw.split(':')[1] if 'ACCESS' in h_b_raw else '0'} $")
+    st.metric("🔵 OnlineSim", f"{st.session_state.osim_bal} $")
+    
+    if st.button("🔄 Manuel Yenile"): st.rerun()
+
+# --- 6. ANA PANEL ---
 st.title("🇹🇷 Multi-SMS Panel")
-tabs = st.tabs(["🐯 Tiger", "🦸 Hero", "🔵 OnlineSim"])
+t1, t2, t3 = st.tabs(["🐯 Tiger", "🦸 Hero", "🔵 OnlineSim"])
 
-# TIGER
-with tabs[0]:
-    s = st.session_state.stocks["tiger"]
+def process_order(src, svc):
+    with st.spinner("İşlem yapılıyor..."):
+        if src == "o":
+            res = osim_request("https://onlinesim.io/api/getNum.php", {"apikey": KEYS["o"], "service": svc, "country": "90"})
+            if res.get("response") == "1":
+                st.session_state.order = {"id": res["tzid"], "num": res["number"], "src": "o"}
+            else: st.error("Osim şu an meşgul, tekrar deneyin.")
+        else:
+            url = "https://api.tiger-sms.com/stubs/handler_api.php" if src == "t" else "https://hero-sms.com/stubs/handler_api.php"
+            res = requests.get(url, {"api_key": KEYS[src], "action": "getNumber", "service": svc, "country": "62"}).text
+            if "ACCESS" in res:
+                p = res.split(":")
+                st.session_state.order = {"id": p[1], "num": p[2], "src": src}
+
+with t1:
     c1, c2 = st.columns(2)
-    c1.write(f"🍔 Yemek: {s.get('yi',{}).get('cost','-')} RUB"); c2.write(f"🚗 Uber: {s.get('ub',{}).get('cost','-')} RUB")
+    if c1.button("🍔 Yemeksepeti (T)"): process_order("t", "yi")
+    if c2.button("🚗 Uber (T)"): process_order("t", "ub")
 
-# HERO
-with tabs[1]:
-    s = st.session_state.stocks["hero"]
+with t2:
     c1, c2 = st.columns(2)
-    c1.write(f"🍔 Yemek: {s.get('yi',{}).get('cost','-')} $"); c2.write(f"🚗 Uber: {s.get('ub',{}).get('cost','-')} $")
+    if c1.button("🍔 Yemeksepeti (H)"): process_order("h", "yi")
+    if c2.button("🚗 Uber (H)"): process_order("h", "ub")
 
-# ONLINESIM (Sorunlu Bölge)
-with tabs[2]:
-    if st.session_state.balances["osim"] == "OFFLINE":
-        st.error("⚠️ OnlineSim sunucusuna ulaşılamıyor. (Bağlantı Zaman Aşımı)")
-    s = st.session_state.stocks["osim"]
-    def get_o(sl): return s.get(sl, {}) or next((v for k,v in s.items() if v.get('slug')==sl), {})
+with t3:
     c1, c2, c3 = st.columns(3)
-    c1.write(f"🍔 Yemek: {get_o('yemeksepeti').get('price','-')} $")
-    c2.write(f"🚗 Uber: {get_o('uber').get('price','-')} $")
-    c3.write(f"☕ Kahve: {get_o('espressolab').get('price','-')} $")
+    if c1.button("🍔 Yemeksepeti (O)"): process_order("o", "yemeksepeti")
+    if c2.button("🚗 Uber (O)"): process_order("o", "uber")
+    if c3.button("☕ Espressolab (O)"): process_order("o", "espressolab")
 
-# --- 8. TAKİP ---
-st.divider()
-st.subheader("📋 İşlemler")
-to_rem = []
-for o in st.session_state.orders:
-    elap = int(time.time() - o['time'])
-    if elap > 135 and o['code'] is None: to_rem.append(o['id']); continue
-    with st.container(border=True):
-        c1, c2, c3 = st.columns([2, 2, 1])
-        # Kod Kontrol Mantığı (Tiger/Hero/Osim) buraya gelecek...
-        c1.write(f"**{o['name']}** ({o['src'].upper()}) - {elap}s")
-        c2.code(f"+{o['phone']}")
-        if st.button("🗑️", key=f"d{o['id']}"): to_rem.append(o['id'])
-
-if to_rem:
-    st.session_state.orders = [x for x in st.session_state.orders if x['id'] not in to_rem]; st.rerun()
-if canli and st.session_state.orders:
-    time.sleep(2); st.rerun()
+# --- 7. TAKİP ---
+if st.session_state.order:
+    ord = st.session_state.order
+    st.divider()
+    st.success(f"✅ Aktif: +{ord['num']} ({ord['src'].upper()})")
+    if st.button("🗑️ Kapat"): st.session_state.order = None; st.rerun()
