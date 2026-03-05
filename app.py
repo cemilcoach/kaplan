@@ -3,178 +3,166 @@ import requests
 import time
 import json
 
-# 1. SAYFA AYARLARI
-st.set_page_config(page_title="SMS Panel V3.8 - Max Speed", layout="wide", page_icon="🇹🇷")
+# --- 1. AYARLAR VE GÜVENLİK ---
+st.set_page_config(page_title="SMS Panel V4.0", layout="wide", page_icon="🇹🇷")
 
-# --- KONFİGÜRASYON ---
 try:
-    TIGER_API_KEY = st.secrets["TIGER_API_KEY"]
-    ONLINESIM_API_KEY = st.secrets["ONLINESIM_API_KEY"]
-    HERO_API_KEY = st.secrets["HERO_API_KEY"]
-    PANEL_SIFRESI = st.secrets["PANEL_SIFRESI"]
-    TG_TOKEN = st.secrets["TELEGRAM_TOKEN"]
-    TG_CHAT_ID = st.secrets["TELEGRAM_CHAT_ID"]
+    S = st.secrets
+    KEYS = {
+        "tiger": S["TIGER_API_KEY"],
+        "osim": S["ONLINESIM_API_KEY"],
+        "hero": S["HERO_API_KEY"],
+        "pass": S["PANEL_SIFRESI"],
+        "tg_token": S["TELEGRAM_TOKEN"],
+        "tg_chat": S["TELEGRAM_CHAT_ID"]
+    }
 except Exception as e:
-    st.error(f"🚨 Secrets eksik: {e}")
+    st.error(f"Secrets Hatası: {e}")
     st.stop()
 
-# --- SABİTLER ---
-AUTO_CANCEL_SEC = 135 
+# --- 2. DURUM YÖNETİMİ (SESSION STATE) ---
+DEFAULTS = {
+    "auth": False,
+    "orders": [],
+    "balances": {"tiger": "0", "osim": "0", "hero": "0"},
+    "stocks": {"tiger": {}, "osim": {}, "hero": {}}
+}
+for key, val in DEFAULTS.items():
+    if key not in st.session_state:
+        st.session_state[key] = val
 
-# --- SESSION STATE YÖNETİMİ ---
-# Verileri cache'de tutarak gereksiz API isteklerini önlüyoruz.
-if 'active_orders' not in st.session_state: st.session_state['active_orders'] = []
-if 'authenticated' not in st.session_state: st.session_state["authenticated"] = False
-if 'data_cache' not in st.session_state: 
-    st.session_state['data_cache'] = {"balances": {}, "stocks": {}}
-
-# --- API FONKSİYONLARI ---
-@st.cache_data(ttl=60) # 60 saniye boyunca aynı isteği tekrar yapmaz, hızı artırır
-def call_generic_api(url, params):
+# --- 3. API ÇEKİRDEĞİ ---
+def fast_get(url, params=None, is_json=False):
     try:
-        return requests.get(url, params=params, timeout=5).text
+        r = requests.get(url, params=params, timeout=5)
+        return r.json() if is_json else r.text
     except:
-        return "ERROR"
+        return {} if is_json else "ERROR"
 
-def send_tg_fast(msg):
-    url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
-    try: requests.post(url, data={"chat_id": str(TG_CHAT_ID), "text": msg, "parse_mode": "HTML"}, timeout=2)
-    except: pass
+def send_tg(msg):
+    url = f"https://api.telegram.org/bot{KEYS['tg_token']}/sendMessage"
+    fast_get(url, {"chat_id": str(KEYS['tg_chat']), "text": msg, "parse_mode": "HTML"})
 
-# --- GİRİŞ KONTROLÜ ---
-if not st.session_state["authenticated"]:
-    st.title("🔒 Pro SMS Panel")
+# --- 4. VERİ GÜNCELLEME (SADECE TETİKLENDİĞİNDE) ---
+def refresh_panel():
+    # Bakiyeler
+    t = fast_get("https://api.tiger-sms.com/stubs/handler_api.php", {"api_key": KEYS["tiger"], "action": "getBalance"})
+    st.session_state.balances["tiger"] = t.split(":")[1] if "ACCESS" in t else "0"
+    
+    h = fast_get("https://hero-sms.com/stubs/handler_api.php", {"api_key": KEYS["hero"], "action": "getBalance"})
+    st.session_state.balances["hero"] = h.split(":")[1] if "ACCESS" in h else "0"
+    
+    o = fast_get("https://onlinesim.io/api/getBalance.php", {"apikey": KEYS["osim"]}, is_json=True)
+    st.session_state.balances["osim"] = o.get("balance", "0")
+
+    # Stoklar
+    st.session_state.stocks["tiger"] = json.loads(fast_get("https://api.tiger-sms.com/stubs/handler_api.php", {"api_key": KEYS["tiger"], "action": "getPrices", "country": "62"})).get("62", {})
+    st.session_state.stocks["hero"] = json.loads(fast_get("https://hero-sms.com/stubs/handler_api.php", {"api_key": KEYS["hero"], "action": "getPrices", "country": "62"})).get("62", {})
+    st.session_state.stocks["osim"] = fast_get("https://onlinesim.io/api/getTariffs.php", {"apikey": KEYS["osim"], "country": "90"}, is_json=True).get("90", {}).get("services", {})
+
+# --- 5. GİRİŞ KONTROLÜ ---
+if not st.session_state.auth:
     with st.form("login"):
-        pwd = st.text_input("Şifre:", type="password")
-        if st.form_submit_button("Giriş", use_container_width=True):
-            if pwd == PANEL_SIFRESI:
-                st.session_state["authenticated"] = True
-                st.rerun()
+        if st.form_submit_button("Giriş", use_container_width=True) and st.text_input("Şifre", type="password") == KEYS["pass"]:
+            st.session_state.auth = True
+            refresh_panel()
+            st.rerun()
     st.stop()
 
-# --- SIDEBAR (BAKİYELER) ---
-st.sidebar.title("🤖 Kontrol")
+# --- 6. SIDEBAR ---
+with st.sidebar:
+    st.title("🤖 Kontrol")
+    st.metric("🐯 Tiger", f"{st.session_state.balances['tiger']} RUB")
+    st.metric("🔵 OnlineSim", f"{st.session_state.balances['osim']} $")
+    st.metric("🦸 Hero", f"{st.session_state.balances['hero']} $")
+    if st.button("🔄 Verileri Yenile", use_container_width=True):
+        refresh_panel()
+        st.rerun()
+    canli = st.toggle("🟢 Takip Aktif", value=True)
 
-def update_balances():
-    # Tiger (RUB)
-    t_res = call_generic_api("https://api.tiger-sms.com/stubs/handler_api.php", {"api_key": TIGER_API_KEY, "action": "getBalance"})
-    st.session_state['data_cache']["balances"]["tiger"] = t_res.split(":")[1] if "ACCESS_BALANCE" in t_res else "0"
-    
-    # Hero (USD)
-    h_res = call_generic_api("https://hero-sms.com/stubs/handler_api.php", {"api_key": HERO_API_KEY, "action": "getBalance"})
-    st.session_state['data_cache']["balances"]["hero"] = h_res.split(":")[1] if "ACCESS_BALANCE" in h_res else "0"
-    
-    # OnlineSim (USD)
-    o_res = requests.get(f"https://onlinesim.io/api/getBalance.php", params={"apikey": ONLINESIM_API_KEY}).json()
-    st.session_state['data_cache']["balances"]["onlinesim"] = o_res.get("balance", "0")
-
-if st.sidebar.button("🔄 Bakiyeleri Güncelle", use_container_width=True) or not st.session_state['data_cache']["balances"]:
-    update_balances()
-
-bal = st.session_state['data_cache']["balances"]
-st.sidebar.metric("🐯 Tiger", f"{bal.get('tiger', '0')} RUB")
-st.sidebar.metric("🔵 OnlineSim", f"{bal.get('onlinesim', '0')} $")
-st.sidebar.metric("🦸 Hero", f"{bal.get('hero', '0')} $")
-
-if st.sidebar.button("🔔 Test Mesajı Gönder"):
-    send_tg_fast(f"🚀 Bakiyeler:\nTiger: {bal.get('tiger')} RUB\nOSim: {bal.get('onlinesim')} $\nHero: {bal.get('hero')} $")
-
-canli = st.sidebar.toggle("🟢 Canlı Takip", value=True)
-
-# --- ANA PANEL ---
-st.title("🇹🇷 Multi-SMS Panel")
-t1, t2, t3 = st.tabs(["🐯 Tiger", "🔵 OnlineSim", "🦸 Hero"])
-
-# --- ALIM FONKSİYONU ---
-def buy_action(source, s_name, s_code, country):
+# --- 7. ALIM İŞLEMİ ---
+def buy(source, s_name, s_code, country):
     res_id, res_num = None, None
     if source == "tiger":
-        r = requests.get("https://api.tiger-sms.com/stubs/handler_api.php", params={"api_key":TIGER_API_KEY,"action":"getNumber","service":s_code,"country":country}).text
-        if "ACCESS_NUMBER" in r: res_id, res_num = r.split(":")[1], r.split(":")[2]
+        r = fast_get("https://api.tiger-sms.com/stubs/handler_api.php", {"api_key": KEYS["tiger"], "action": "getNumber", "service": s_code, "country": country})
+        if "ACCESS" in r: res_id, res_num = r.split(":")[1], r.split(":")[2]
     elif source == "hero":
-        r = requests.get("https://hero-sms.com/stubs/handler_api.php", params={"api_key":HERO_API_KEY,"action":"getNumber","service":s_code,"country":country}).text
-        if "ACCESS_NUMBER" in r: res_id, res_num = r.split(":")[1], r.split(":")[2]
-    elif source == "onlinesim":
-        r = requests.get("https://onlinesim.io/api/getNum.php", params={"apikey":ONLINESIM_API_KEY,"service":s_code,"country":country}).json()
-        if str(r.get("response")) == "1":
-            res_id, res_num = r.get("tzid"), r.get("number")
+        r = fast_get("https://hero-sms.com/stubs/handler_api.php", {"api_key": KEYS["hero"], "action": "getNumber", "service": s_code, "country": country})
+        if "ACCESS" in r: res_id, res_num = r.split(":")[1], r.split(":")[2]
+    elif source == "osim":
+        r = fast_get("https://onlinesim.io/api/getNum.php", {"apikey": KEYS["osim"], "service": s_code, "country": country}, is_json=True)
+        if str(r.get("response")) == "1": res_id, res_num = r.get("tzid"), r.get("number")
 
     if res_id and res_num:
-        st.session_state['active_orders'].append({"id":res_id, "phone":res_num, "service":s_name, "source":source, "time":time.time(), "status":"Bekliyor", "code":None})
-        st.toast("✅ Numara Alındı!")
-    else: st.error(f"❌ Başarısız: {source}")
+        st.session_state.orders.append({"id":res_id, "phone":res_num, "name":s_name, "src":source, "time":time.time(), "code":None})
+        st.toast("Numara Alındı!")
+    else: st.error("Stok yok veya bakiye yetersiz.")
 
-# --- SEKMELER ---
-with t1:
-    # Sadece bu sekme açıldığında stok çekilir
-    t_stocks = json.loads(call_generic_api("https://api.tiger-sms.com/stubs/handler_api.php", {"api_key": TIGER_API_KEY, "action": "getPrices", "country": "62"})).get("62", {})
+# --- 8. ARAYÜZ ---
+st.title("🇹🇷 Multi-SMS Panel")
+tabs = st.tabs(["🐯 Tiger", "🔵 OnlineSim", "🦸 Hero"])
+
+with tabs[0]: # Tiger
     c1, c2 = st.columns(2)
-    c1.write(f"🍔 Yemek: {t_stocks.get('yi',{}).get('cost','-')} RUB")
-    if c1.button("AL", key="bt1"): buy_action("tiger", "Yemeksepeti", "yi", "62")
-    c2.write(f"🚗 Uber: {t_stocks.get('ub',{}).get('cost','-')} RUB")
-    if c2.button("AL", key="bt2"): buy_action("tiger", "Uber", "ub", "62")
+    s = st.session_state.stocks["tiger"]
+    c1.write(f"🍔 Yemek: {s.get('yi',{}).get('cost','-')} RUB")
+    if c1.button("AL", key="t1"): buy("tiger", "Yemeksepeti", "yi", "62")
+    c2.write(f"🚗 Uber: {s.get('ub',{}).get('cost','-')} RUB")
+    if c2.button("AL", key="t2"): buy("tiger", "Uber", "ub", "62")
 
-with t2:
-    # OnlineSim Türkiye (90) stokları
-    o_stocks = requests.get("https://onlinesim.io/api/getTariffs.php", params={"apikey":ONLINESIM_API_KEY, "country":"90"}).json().get("90", {}).get("services", {})
+with tabs[1]: # OnlineSim
     c1, c2, c3 = st.columns(3)
-    c1.write(f"🍔 Yemek: {o_stocks.get('yemeksepeti',{}).get('price','-')} $")
-    if c1.button("AL", key="bo1"): buy_action("onlinesim", "Yemeksepeti", "yemeksepeti", "90")
-    c2.write(f"🚗 Uber: {o_stocks.get('uber',{}).get('price','-')} $")
-    if c2.button("AL", key="bo2"): buy_action("onlinesim", "Uber", "uber", "90")
-    c3.write(f"☕ Kahve: {o_stocks.get('espressolab',{}).get('price','-')} $")
-    if c3.button("AL", key="bo3"): buy_action("onlinesim", "Espressolab", "espressolab", "90")
+    s = st.session_state.stocks["osim"]
+    c1.write(f"🍔 Yemek: {s.get('yemeksepeti',{}).get('price','-')} $")
+    if c1.button("AL", key="o1"): buy("osim", "Yemeksepeti", "yemeksepeti", "90")
+    c2.write(f"🚗 Uber: {s.get('uber',{}).get('price','-')} $")
+    if c2.button("AL", key="o2"): buy("osim", "Uber", "uber", "90")
+    c3.write(f"☕ Kahve: {s.get('espressolab',{}).get('price','-')} $")
+    if c3.button("AL", key="o3"): buy("osim", "Espressolab", "espressolab", "90")
 
-with t3:
-    h_stocks = json.loads(call_generic_api("https://hero-sms.com/stubs/handler_api.php", {"api_key": HERO_API_KEY, "action": "getPrices", "country": "62"})).get("62", {})
+with tabs[2]: # Hero
     c1, c2 = st.columns(2)
-    c1.write(f"🍔 Yemek: {h_stocks.get('yi',{}).get('cost','-')} $")
-    if c1.button("AL", key="bh1"): buy_action("hero", "Yemeksepeti", "yi", "62")
-    c2.write(f"🚗 Uber: {h_stocks.get('ub',{}).get('cost','-')} $")
-    if c2.button("AL", key="bh2"): buy_action("hero", "Uber", "ub", "62")
+    s = st.session_state.stocks["hero"]
+    c1.write(f"🍔 Yemek: {s.get('yi',{}).get('cost','-')} $")
+    if c1.button("AL", key="h1"): buy("hero", "Yemeksepeti", "yi", "62")
+    c2.write(f"🚗 Uber: {s.get('ub',{}).get('cost','-')} $")
+    if c2.button("AL", key="h2"): buy("hero", "Uber", "ub", "62")
 
-# --- TAKİP (SADECE SİPARİŞ VARSA ÇALIŞIR) ---
-if st.session_state['active_orders']:
-    st.divider()
-    to_rem = []
-    for o in st.session_state['active_orders']:
-        elap = int(time.time() - o['time'])
-        if o['code'] is None and elap >= AUTO_CANCEL_SEC:
-            # İptal işlemleri
-            if o['source'] == "tiger": requests.get("https://api.tiger-sms.com/stubs/handler_api.php", params={"api_key":TIGER_API_KEY,"action":"setStatus","id":o['id'],"status":8})
-            elif o['source'] == "hero": requests.get("https://hero-sms.com/stubs/handler_api.php", params={"api_key":HERO_API_KEY,"action":"setStatus","id":o['id'],"status":8})
-            else: requests.get("https://onlinesim.io/api/setOperationRevise.php", params={"apikey":ONLINESIM_API_KEY,"tzid":o['id']})
-            to_rem.append(o['id'])
-            continue
-        
-        # Durum Sorgulama
-        with st.container(border=True):
-            c1, c2, c3 = st.columns([2, 2, 1])
-            if o['code'] is None:
-                if o['source'] == "tiger":
-                    check = requests.get("https://api.tiger-sms.com/stubs/handler_api.php", params={"api_key":TIGER_API_KEY,"action":"getStatus","id":o['id']}).text
-                    if "STATUS_OK" in check: o['code'] = check.split(":")[1]
-                elif o['source'] == "hero":
-                    check = requests.get("https://hero-sms.com/stubs/handler_api.php", params={"api_key":HERO_API_KEY,"action":"getStatus","id":o['id']}).text
-                    if "STATUS_OK" in check: o['code'] = check.split(":")[1]
-                else:
-                    check = requests.get("https://onlinesim.io/api/getState.php", params={"apikey":ONLINESIM_API_KEY,"tzid":o['id']}).json()
-                    if check.get("response") == "1" and "msg" in check: o['code'] = check['msg']
-                
-                if o['code']:
-                    send_tg_fast(f"📩 {o['service']} KOD: {o['code']}")
-                    st.rerun()
+# --- 9. TAKİP VE OTO-YENİLEME ---
+st.divider()
+to_rem = []
+for o in st.session_state.orders:
+    elap = int(time.time() - o['time'])
+    if elap > 135 and o['code'] is None:
+        to_rem.append(o['id'])
+        continue
 
-            c1.write(f"**{o['service']}** ({o['source'].upper()}) - {elap}s")
-            c2.code(f"+{o['phone']}")
-            if o['code']: st.success(f"KOD: {o['code']}")
-            if c3.button("🗑️", key=f"d{o['id']}"): to_rem.append(o['id'])
+    with st.container(border=True):
+        c1, c2, c3 = st.columns([2, 2, 1])
+        if o['code'] is None:
+            if o['src'] == "tiger":
+                res = fast_get("https://api.tiger-sms.com/stubs/handler_api.php", {"api_key": KEYS["tiger"], "action": "getStatus", "id": o['id']})
+                if "STATUS_OK" in res: o['code'] = res.split(":")[1]
+            elif o['src'] == "hero":
+                res = fast_get("https://hero-sms.com/stubs/handler_api.php", {"api_key": KEYS["hero"], "action": "getStatus", "id": o['id']})
+                if "STATUS_OK" in res: o['code'] = res.split(":")[1]
+            elif o['src'] == "osim":
+                res = fast_get("https://onlinesim.io/api/getState.php", {"apikey": KEYS["osim"], "tzid": o['id']}, is_json=True)
+                if res.get("response") == "1" and "msg" in res: o['code'] = res['msg']
+            
+            if o['code']:
+                send_tg(f"📩 {o['name']} KOD: {o['code']} (+{o['phone']})")
+                st.rerun()
 
-    if to_rem:
-        st.session_state['active_orders'] = [x for x in st.session_state['active_orders'] if x['id'] not in to_rem]
-        st.rerun()
+        c1.write(f"**{o['name']}** ({o['src'].upper()}) - {elap}s")
+        c2.code(f"+{o['phone']}")
+        if o['code']: st.success(f"KOD: {o['code']}")
+        if c3.button("🗑️", key=f"d{o['id']}"): to_rem.append(o['id'])
 
-    if canli:
-        time.sleep(2)
-        st.rerun()
- 
+if to_rem:
+    st.session_state.orders = [x for x in st.session_state.orders if x['id'] not in to_rem]
+    st.rerun()
+
+if canli and st.session_state.orders:
+    time.sleep(2)
+    st.rerun()
