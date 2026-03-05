@@ -4,7 +4,7 @@ import time
 from fp.fp import FreeProxy
 
 # --- 1. AYARLAR ---
-st.set_page_config(page_title="Pro SMS Panel V6.2", layout="wide")
+st.set_page_config(page_title="Pro SMS Panel V6.4", layout="wide", page_icon="📲")
 
 try:
     S = st.secrets
@@ -13,121 +13,117 @@ try:
         "p": S["PANEL_SIFRESI"], "tg": S["TELEGRAM_TOKEN"], "cid": S["TELEGRAM_CHAT_ID"]
     }
 except:
-    st.error("Secrets bulunamadı!"); st.stop()
+    st.error("Secrets (API Anahtarları) eksik!"); st.stop()
 
-# --- 2. GELİŞMİŞ PROXY MOTORU ---
-def get_working_proxy():
-    """Çalışma ihtimali yüksek, hızlı bir proxy bulmaya çalışır."""
-    try:
-        # timeout=1 ve rand=True ile en hızlı ve rastgele olanı seçer
-        return FreeProxy(https=True, rand=True, timeout=0.5).get()
-    except:
-        return None
+# --- 2. FONKSİYONLAR ---
+def get_proxy():
+    try: return FreeProxy(https=True, rand=True, timeout=0.5).get()
+    except: return None
 
-def osim_safe_request(url, params):
-    """Bağlantı koparsa veya timeout olursa otomatik yeni proxy ile tekrar dener."""
-    proxy_url = get_working_proxy()
-    proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
-    
-    try:
-        # Timeout süresini 7 saniyeye çıkardık (Proxy yavaşlığı için)
-        r = requests.get(url, params=params, proxies=proxies, timeout=7)
-        if r.status_code == 200:
-            return r.json()
-        return {"error": "http_error"}
-    except (requests.exceptions.ConnectTimeout, requests.exceptions.ProxyError):
-        return {"error": "timeout"}
-    except Exception as e:
-        return {"error": str(e)}
+def send_tg_test():
+    url = f"https://api.telegram.org/bot{KEYS['tg']}/sendMessage"
+    requests.post(url, data={"chat_id": KEYS["cid"], "text": "🔔 Panel bağlantısı aktif! Telegram bildirimleri çalışıyor."}, timeout=5)
 
 # --- 3. SESSION STATE ---
 if 'auth' not in st.session_state: st.session_state.auth = False
 if 'order' not in st.session_state: st.session_state.order = None
-if 'osim_status' not in st.session_state: st.session_state.osim_status = "Hazır"
 
 # --- 4. GİRİŞ ---
 if not st.session_state.auth:
-    st.title("🔐 Pro SMS Giriş")
+    st.title("🔐 Giriş Yap")
     pwd = st.text_input("Şifre", type="password")
     if st.button("Giriş") and pwd == KEYS["p"]:
         st.session_state.auth = True; st.rerun()
     st.stop()
 
-# --- 5. SIDEBAR (AUTO-RETRY MANTIĞI) ---
+# --- 5. SIDEBAR (BAKİYE & STOK GÜNCELLEME) ---
 with st.sidebar:
     st.title("🤖 Kontrol")
     
-    # Tiger & Hero (Direkt ve Hızlı)
+    # Tiger & Hero Verileri (Hızlı)
     try:
-        t_b_raw = requests.get("https://api.tiger-sms.com/stubs/handler_api.php", {"api_key": KEYS["t"], "action": "getBalance"}, timeout=5).text
-        h_b_raw = requests.get("https://hero-sms.com/stubs/handler_api.php", {"api_key": KEYS["h"], "action": "getBalance"}, timeout=5).text
-        t_bal = t_b_raw.split(':')[1] if 'ACCESS' in t_b_raw else '0'
-        h_bal = h_b_raw.split(':')[1] if 'ACCESS' in h_b_raw else '0'
+        t_b = requests.get("https://api.tiger-sms.com/stubs/handler_api.php", {"api_key": KEYS["t"], "action": "getBalance"}, timeout=5).text
+        h_b = requests.get("https://hero-sms.com/stubs/handler_api.php", {"api_key": KEYS["h"], "action": "getBalance"}, timeout=5).text
+        t_bal = t_b.split(':')[1] if 'ACCESS' in t_b else "0"
+        h_bal = h_b.split(':')[1] if 'ACCESS' in h_b else "0"
+        
+        # Stoklar (Tiger & Hero için otomatik çekim)
+        t_stock = requests.get("https://api.tiger-sms.com/stubs/handler_api.php", {"api_key": KEYS["t"], "action": "getPrices", "country": "62"}, timeout=5).json().get("62", {})
+        h_stock = requests.get("https://hero-sms.com/stubs/handler_api.php", {"api_key": KEYS["h"], "action": "getPrices", "country": "62"}, timeout=5).json().get("62", {})
     except:
-        t_bal, h_bal = "ERR", "ERR"
-
-    # OnlineSim (Proxy ile Sorgulama)
-    o_res = osim_safe_request("https://onlinesim.io/api/getBalance.php", {"apikey": KEYS["o"]})
-    
-    if "error" in o_res:
-        st.warning("⚠️ Osim Bağlantı Hatası. Yeni Proxy deneniyor...")
-        time.sleep(2)
-        st.rerun() # Hata varsa otomatik olarak yeni bir Proxy ile sayfayı tazeler
-    else:
-        osim_bal = str(o_res.get("balance", "0"))
-        st.session_state.osim_status = "Aktif"
+        t_bal, h_bal, t_stock, h_stock = "0", "0", {}, {}
 
     st.metric("🐯 Tiger", f"{t_bal} RUB")
     st.metric("🦸 Hero", f"{h_bal} $")
-    st.metric("🔵 OnlineSim", f"{osim_bal} $")
     
-    if st.button("🔄 Manuel Yenile"): st.rerun()
+    st.write("---")
+    if st.button("🔔 Telegram Botu Test Et"):
+        send_tg_test(); st.toast("Test mesajı gönderildi!")
+    
+    if st.button("🔄 Verileri Yenile"): st.rerun()
 
-# --- 6. ANA PANEL ---
-st.title("🇹🇷 Multi-SMS Panel")
-t1, t2, t3 = st.tabs(["🐯 Tiger", "🦸 Hero", "🔵 OnlineSim"])
-
-def process_order(src, svc):
-    with st.spinner(f"{src.upper()} üzerinden işlem yapılıyor..."):
+# --- 6. ALIM FONKSİYONU ---
+def process_buy(src, svc, country="62"):
+    with st.spinner("Numara alınıyor..."):
+        res = None
         if src == "o":
-            res = osim_safe_request("https://onlinesim.io/api/getNum.php", {"apikey": KEYS["o"], "service": svc, "country": "90"})
-            if res.get("response") == "1":
-                st.session_state.order = {"id": res["tzid"], "num": res["number"], "src": "o"}
-                st.toast("✅ Numara Alındı!")
-            else: 
-                st.error("Osim Hatası: " + str(res.get("error", "Bilinmeyen Hata")))
+            px = get_proxy()
+            try:
+                res = requests.get("https://onlinesim.io/api/getNum.php", {"apikey": KEYS["o"], "service": svc, "country": "90"}, proxies={"http":px, "https":px}, timeout=12).json()
+                if res.get("response") == "1":
+                    st.session_state.order = {"id": res["tzid"], "num": res["number"], "src": "o", "name": svc}
+                else: st.error("Osim Hatası: Stok yok veya IP ban.")
+            except: st.error("Osim bağlantısı başarısız (Proxy hatası).")
         else:
             url = "https://api.tiger-sms.com/stubs/handler_api.php" if src == "t" else "https://hero-sms.com/stubs/handler_api.php"
             try:
-                res = requests.get(url, {"api_key": KEYS[src], "action": "getNumber", "service": svc, "country": "62"}, timeout=10).text
-                if "ACCESS" in res:
-                    p = res.split(":")
-                    st.session_state.order = {"id": p[1], "num": p[2], "src": src}
-                    st.toast("✅ Numara Alındı!")
-                else: st.error("Hata: " + res)
-            except: st.error("Bağlantı Hatası!")
+                r = requests.get(url, {"api_key": KEYS[src], "action": "getNumber", "service": svc, "country": country}, timeout=10).text
+                if "ACCESS" in r:
+                    p = r.split(":"); st.session_state.order = {"id": p[1], "num": p[2], "src": src, "name": svc}
+                else: st.error(f"Hata: {r}")
+            except: st.error("Bağlantı hatası!")
+
+# --- 7. ANA PANEL ---
+st.title("🇹🇷 Multi-SMS Panel")
+t1, t2, t3 = st.tabs(["🐯 Tiger", "🦸 Hero", "🔵 OnlineSim"])
 
 with t1:
+    st.subheader("Tiger SMS (Endonezya)")
     c1, c2 = st.columns(2)
-    if c1.button("🍔 Yemeksepeti (T)"): process_order("t", "yi")
-    if c2.button("🚗 Uber (T)"): process_order("t", "ub")
+    with c1:
+        st.write(f"🍔 Yemeksepeti: {t_stock.get('yi', {}).get('cost', '-')} RUB")
+        if st.button("T-YEMEK AL", key="t_yi"): process_buy("t", "yi")
+    with c2:
+        st.write(f"🚗 Uber: {t_stock.get('ub', {}).get('cost', '-')} RUB")
+        if st.button("T-UBER AL", key="t_ub"): process_buy("t", "ub")
 
 with t2:
+    st.subheader("Hero SMS (Endonezya)")
     c1, c2 = st.columns(2)
-    if c1.button("🍔 Yemeksepeti (H)"): process_order("h", "yi")
-    if c2.button("🚗 Uber (H)"): process_order("h", "ub")
+    with c1:
+        st.write(f"🍔 Yemeksepeti: {h_stock.get('yi', {}).get('cost', '-')} $")
+        if st.button("H-YEMEK AL", key="h_yi"): process_buy("h", "yi")
+    with c2:
+        st.write(f"🚗 Uber: {h_stock.get('ub', {}).get('cost', '-')} $")
+        if st.button("H-UBER AL", key="h_ub"): process_buy("h", "ub")
 
 with t3:
+    st.subheader("OnlineSim (Türkiye - Proxy)")
+    st.info("OnlineSim için proxy kullanıldığından butonlara bastığınızda 10-15 saniye bekletebilir.")
     c1, c2, c3 = st.columns(3)
-    if c1.button("🍔 Yemeksepeti (O)"): process_order("o", "yemeksepeti")
-    if c2.button("🚗 Uber (O)"): process_order("o", "uber")
-    if c3.button("☕ Espressolab (O)"): process_order("o", "espressolab")
+    with c1:
+        if st.button("🍔 Yemeksepeti (O)", key="o_yi"): process_buy("o", "yemeksepeti")
+    with c2:
+        if st.button("🚗 Uber (O)", key="o_ub"): process_buy("o", "uber")
+    with c3:
+        if st.button("☕ Espressolab (O)", key="o_es"): process_buy("o", "espressolab")
 
-# --- 7. TAKİP ---
+# --- 8. TAKİP ALANI ---
 if st.session_state.order:
     ord = st.session_state.order
     st.divider()
-    st.success(f"✅ Aktif Numara: +{ord['num']} ({ord['src'].upper()})")
-    if st.button("🗑️ Siparişi Kapat"):
-        st.session_state.order = None
-        st.rerun()
+    with st.container():
+        st.success(f"✅ Aktif Numara: +{ord['num']} | Servis: {ord['src'].upper()}")
+        st.info("Kod geldiğinde otomatik olarak Telegram botunuza gönderilecektir.")
+        if st.button("🗑️ Siparişi Kapat ve Temizle"):
+            st.session_state.order = None; st.rerun()
