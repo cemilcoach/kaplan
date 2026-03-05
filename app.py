@@ -196,5 +196,3 @@ if to_rem:
 
 if canli and st.session_state.orders:
     time.sleep(2); st.rerun()
-ession_state.orders:
-    time.sleep(2); st.rerun()
