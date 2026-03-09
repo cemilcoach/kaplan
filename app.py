@@ -2,121 +2,114 @@ import streamlit as st
 import requests
 import time
 
-# --- 1. Mobil ve Arayüz Ayarları ---
-st.set_page_config(page_title="HeroSMS TR V2", layout="wide")
+# --- 1. Sayfa ve Mobil Ayarları ---
+st.set_page_config(page_title="HeroSMS TR Panel", layout="wide")
 st.markdown("""
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <style>
     input, button { font-size: 16px !important; }
-    .stButton>button { width: 100%; border-radius: 12px; height: 3.5em; background-color: #d32f2f; color: white; font-weight: bold; }
-    .order-box { padding: 20px; border-radius: 15px; background-color: #fff3e0; border: 2px solid #ff9800; }
+    .stButton>button { width: 100%; border-radius: 10px; height: 3.5em; background-color: #0088cc; color: white; font-weight: bold; }
+    .active-card { padding: 15px; border-radius: 12px; background-color: #f0f9ff; border: 2px solid #0088cc; margin-bottom: 20px; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. API Bilgileri ---
-# Dokümana göre API Anahtarı ve Endpoint'ler
+# --- 2. API ve Güvenlik Bilgileri ---
 API_KEY = "6ce1bb5837f81db1f4cA0b341Ac58956"
 PANEL_PASS = "asnaeb68%A"
 TG_TOKEN = "8443974633:AAEErjkHLykfsNdbvaty_5Z02YUJ3oPQx0E"
 TG_CHAT_ID = "1009360711"
 BASE_URL = "https://hero-sms.com/stubs/handler_api.php"
 
-# --- 3. Gelişmiş API Fonksiyonları ---
-def call_api(action, params):
-    params["api_key"] = API_KEY
-    params["action"] = action
-    try:
-        response = requests.get(BASE_URL, params=params)
-        # V2 ve getPrices JSON döner, getStatus/setStatus metin döner
-        try:
-            return response.json()
-        except:
-            return response.text
-    except Exception as e:
-        return f"Hata: {str(e)}"
+# KRİTİK DÜZELTME: Dokümana göre Türkiye ID'si 143'tür (Telefon kodu 90 ile karıştırılmamalıdır)
+TR_COUNTRY_ID = 143 
 
-# --- 4. Giriş Paneli ---
-if "authenticated" not in st.session_state: st.session_state.authenticated = False
-if not st.session_state.authenticated:
-    with st.container():
-        st.title("🛡️ Güvenli Giriş")
-        sifre = st.text_input("Panel Şifresi", type="password")
-        if st.button("Sistemi Aç") and sifre == PANEL_PASS:
-            st.session_state.authenticated = True
-            st.rerun()
+# --- 3. Kimlik Doğrulama ---
+if "auth" not in st.session_state: st.session_state.auth = False
+if not st.session_state.auth:
+    pwd = st.text_input("Giriş Şifresi", type="password")
+    if st.button("Paneli Aç") and pwd == PANEL_PASS:
+        st.session_state.auth = True
+        st.rerun()
     st.stop()
 
-# --- 5. Ana Panel ---
-balance_res = call_api("getBalance", {})
-balance = balance_res.split(":")[1] if isinstance(balance_res, str) and "ACCESS_BALANCE" in balance_res else "0.00"
-st.sidebar.metric("Cüzdan", f"{balance} ₽")
+# --- 4. API Fonksiyonları ---
+def api_request(action, additional_params=None):
+    params = {"api_key": API_KEY, "action": action}
+    if additional_params:
+        params.update(additional_params)
+    try:
+        response = requests.get(BASE_URL, params=params)
+        return response.json() if "getPrices" in action or "getNumberV2" in action else response.text
+    except: return None
 
-st.title("🇹🇷 Türkiye Özel SMS Paneli")
+# --- 5. Arayüz ve Bakiye ---
+balance_raw = api_request("getBalance")
+balance = balance_raw.split(":")[1] if isinstance(balance_raw, str) and "ACCESS" in balance_raw else "0.00"
+st.sidebar.metric("Bakiye", f"{balance} ₽")
 
-if "active_id" not in st.session_state: st.session_state.active_id = None
+st.title("🇹🇷 Türkiye (TR) SMS Servisi")
 
-# Fiyatları Çek (Türkiye - 90)
-prices_json = call_api("getPrices", {"country": 90})
+if "active_order" not in st.session_state: st.session_state.active_order = None
 
-if isinstance(prices_json, dict) and "90" in prices_json:
-    tr_prices = prices_json["90"]
-    col1, col2 = st.columns(2)
+# Fiyatları Listele
+prices = api_request("getPrices", {"country": TR_COUNTRY_ID})
+
+if isinstance(prices, dict) and str(TR_COUNTRY_ID) in prices:
+    tr_data = prices[str(TR_COUNTRY_ID)]
+    c1, c2 = st.columns(2)
     
-    for idx, (srv_label, srv_code) in enumerate([("Uber", "ub"), ("Yemeksepeti", "yi")]):
-        data = tr_prices.get(srv_code, {"cost": 0, "count": 0})
-        with (col1 if idx == 0 else col2):
-            st.subheader(f"📍 {srv_label}")
-            st.write(f"Fiyat: **{data['cost']} ₽**")
-            st.write(f"Stok: **{data['count']}**")
+    services = [("Uber", "ub"), ("Yemeksepeti", "yi")]
+    for i, (name, code) in enumerate(services):
+        srv_info = tr_data.get(code, {"cost": 0, "count": 0})
+        with (c1 if i == 0 else c2):
+            st.subheader(name)
+            st.write(f"Fiyat: **{srv_info['cost']} ₽** | Stok: **{srv_info['count']}**")
             
-            # KRİTİK DÜZELTME: getNumberV2 kullanımı
-            if st.button(f"{srv_label} Numarası Al", key=srv_code, disabled=st.session_state.active_id is not None):
-                # Doküman: getNumberV2 daha güvenli bir parametre yapısı sunar
-                res = call_api("getNumberV2", {"service": srv_code, "country": 90})
+            if st.button(f"{name} Al", key=code, disabled=st.session_state.active_order is not None):
+                # getNumberV2 kullanarak Türkiye (143) üzerinden numara istiyoruz
+                res = api_request("getNumberV2", {"service": code, "country": TR_COUNTRY_ID})
                 
                 if isinstance(res, dict) and "phoneNumber" in res:
-                    st.session_state.active_id = res["activationId"]
-                    st.session_state.active_num = res["phoneNumber"]
-                    st.session_state.active_srv = srv_label
-                    # Numarayı SMS alımına hazır hale getir (Status 1)
-                    call_api("setStatus", {"id": res["activationId"], "status": 1})
+                    st.session_state.active_order = {
+                        "id": res["activationId"],
+                        "num": res["phoneNumber"],
+                        "name": name
+                    }
+                    # SMS alımını aktifleştir
+                    api_request("setStatus", {"id": res["activationId"], "status": 1})
                     st.rerun()
                 else:
-                    st.error(f"API Hatası: {res}")
-else:
-    st.error("Türkiye stok verisi çekilemedi. API anahtarını veya ülke ID'sini kontrol edin.")
+                    st.error(f"Hata: {res}")
 
-# --- 6. Aktif Sipariş ve Telegram Takibi ---
-if st.session_state.active_id:
-    st.divider()
-    st.markdown(f"""
-    <div class="order-box">
-        <h3>🚀 AKTİF HAT: {st.session_state.active_srv}</h3>
-        <h2 style='color: #d32f2f;'>+{st.session_state.active_num}</h2>
-        <p>İşlem ID: {st.session_state.active_id}</p>
-    </div>
-    """, unsafe_allow_html=True)
+# --- 6. Aktif Sipariş ve Kod Bekleme ---
+if st.session_state.active_order:
+    order = st.session_state.active_order
+    st.markdown(f"""<div class="active-card">
+        <h3>🔥 Bekleyen Numara: {order['name']}</h3>
+        <h2 style='color:#0088cc;'>+{order['num']}</h2>
+        <p>İşlem ID: {order['id']}</p>
+    </div>""", unsafe_allow_html=True)
 
-    # Durum Kontrolü
-    status_check = call_api("getStatus", {"id": st.session_state.active_id})
+    status = api_request("getStatus", {"id": order['id']})
     
-    if "STATUS_OK" in status_check:
-        sms_code = status_check.split(":")[1]
-        st.success(f"📩 KOD GELDİ: {sms_code}")
-        # Telegram'a gönder
+    if "STATUS_OK" in status:
+        sms_code = status.split(":")[1]
+        st.success(f"📩 KOD: {sms_code}")
+        # Telegram Bildirimi
         requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage", 
-                      json={"chat_id": TG_CHAT_ID, "text": f"✅ {st.session_state.active_srv} KODU: {sms_code}\nNumara: {st.session_state.active_num}"})
+                      json={"chat_id": TG_CHAT_ID, "text": f"✅ {order['name']} Kodu: {sms_code}\nNumara: {order['num']}"})
         
-        if st.button("✅ Kodu Onayla ve Kapat"):
-            call_api("setStatus", {"id": st.session_state.active_id, "status": 6})
-            st.session_state.active_id = None
+        if st.button("Tamamla"):
+            api_request("setStatus", {"id": order['id'], "status": 6})
+            st.session_state.active_order = None
             st.rerun()
-    elif "STATUS_WAIT_CODE" in status_check:
-        st.info("⌛ SMS bekleniyor... (Otomatik Yenilenir)")
+            
+    elif "STATUS_WAIT_CODE" in status:
+        st.info("⌛ Kod bekleniyor... (Ekranı yenilemeyin)")
         time.sleep(5)
         st.rerun()
 
-    if st.button("❌ Numarayı İptal Et (İade)"):
-        call_api("setStatus", {"id": st.session_state.active_id, "status": 8})
-        st.session_state.active_id = None
+    if st.button("❌ İptal Et (İade)"):
+        api_request("setStatus", {"id": order['id'], "status": 8})
+        st.session_state.active_order = None
         st.rerun()
