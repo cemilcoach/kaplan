@@ -4,196 +4,181 @@ import time
 import json
 
 # 1. SAYFA AYARLARI
-st.set_page_config(page_title="Multi SMS Panel - Pro", layout="wide", page_icon="📲")
+st.set_page_config(page_title="Multi SMS Pro", layout="wide", page_icon="🇹🇷")
 
-# --- KONFİGÜRASYON ---
+# --- GÜVENLİ VERİ ÇEKME (SECRETS) ---
 try:
-    # Tiger Secrets
+    # Tiger & Hero Keys
     API_KEY_TIGER = st.secrets["TIGER_API_KEY"]
-    # Hero SMS Secrets (Secrets kısmına eklemeyi unutmayın!)
     API_KEY_HERO = st.secrets["HERO_API_KEY"]
     
+    # Genel Ayarlar
     PANEL_SIFRESI = st.secrets["PANEL_SIFRESI"]
     TG_TOKEN = st.secrets["TELEGRAM_TOKEN"]
     TG_CHAT_ID = st.secrets["TELEGRAM_CHAT_ID"]
-except KeyError:
-    st.error("🚨 Secrets dosyası eksik! TIGER_API_KEY ve HERO_API_KEY bilgilerini kontrol edin.")
+except KeyError as e:
+    st.error(f"🚨 Secrets dosyasında eksik değişken: {e}")
+    st.info("Lütfen .streamlit/secrets.toml dosyanızı kontrol edin.")
     st.stop()
 
-# API URL'leri
+# Sabitler
 TIGER_URL = "https://api.tiger-sms.com/stubs/handler_api.php"
 HERO_URL = "https://hero-sms.com/api"
-TR_ID = "62"
-AUTO_CANCEL_SEC = 135 
+TR_ID_TIGER = "62"
+TR_ID_HERO = "tr"
+AUTO_CANCEL_SEC = 135
 
-class SMSBot:
-    def __init__(self, tiger_key, hero_key):
-        self.tiger_key = tiger_key
-        self.hero_key = hero_key
+class SMSManager:
+    def __init__(self, t_key, h_key):
+        self.t_key = t_key
+        self.h_key = h_key
 
-    def send_telegram(self, message):
+    def send_tg(self, msg):
         url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
-        payload = {"chat_id": TG_CHAT_ID, "text": message, "parse_mode": "HTML"}
-        try: requests.post(url, data=payload, timeout=5)
+        try: requests.post(url, data={"chat_id": TG_CHAT_ID, "text": msg, "parse_mode": "HTML"}, timeout=5)
         except: pass
 
-    # --- TIGER SMS METODLARI ---
-    def tiger_api(self, action, **kwargs):
-        params = {"api_key": self.tiger_key, "action": action}
+    # --- TIGER API ---
+    def tiger_call(self, action, **kwargs):
+        params = {"api_key": self.t_key, "action": action}
         params.update(kwargs)
         try:
             r = requests.get(TIGER_URL, params=params, timeout=10)
             return r.text
         except: return "ERROR"
 
-    # --- HERO SMS METODLARI ---
-    def hero_api(self, action, **kwargs):
-        # Hero SMS genellikle POST veya GET ile 'api_key' parametresini bekler
-        params = {"api_key": self.hero_key, "action": action}
+    # --- HERO API ---
+    def hero_call(self, action, **kwargs):
+        params = {"api_key": self.h_key, "action": action}
         params.update(kwargs)
         try:
             r = requests.get(HERO_URL, params=params, timeout=10)
-            return r.json() # Hero genellikle JSON döner
-        except: return {"status": "error", "message": "Bağlantı Hatası"}
+            return r.json()
+        except: return {"status": "error"}
 
-# --- GİRİŞ KONTROLÜ ---
-if "authenticated" not in st.session_state:
-    st.session_state["authenticated"] = False
+# --- SESSION STATE ---
+if "auth" not in st.session_state: st.session_state["auth"] = False
+if 'orders' not in st.session_state: st.session_state['orders'] = []
 
-if not st.session_state["authenticated"]:
-    st.title("🔒 Pro SMS Panel Giriş")
-    pwd_input = st.text_input("Şifre:", type="password")
-    if st.button("Giriş Yap", use_container_width=True):
-        if pwd_input.strip() == PANEL_SIFRESI:
-            st.session_state["authenticated"] = True
+# --- LOGIN ---
+if not st.session_state["auth"]:
+    st.title("🔒 SMS Panel Giriş")
+    pwd = st.text_input("Şifre:", type="password")
+    if st.button("Giriş", use_container_width=True):
+        if pwd == PANEL_SIFRESI:
+            st.session_state["auth"] = True
             st.rerun()
-        else: st.error("❌ Hatalı Şifre!")
+        else: st.error("Hatalı!")
     st.stop()
 
-bot = SMSBot(API_KEY_TIGER, API_KEY_HERO)
-if 'active_orders' not in st.session_state:
-    st.session_state['active_orders'] = []
+bot = SMSManager(API_KEY_TIGER, API_KEY_HERO)
 
 # --- SIDEBAR ---
-st.sidebar.title("🤖 Panel Kontrol")
+st.sidebar.title("🎮 Kontrol Merkezi")
+t_res = bot.tiger_call("getBalance")
+t_bal = t_res.split(":")[1] if "BALANCE" in t_res else "0"
+st.sidebar.metric("🐯 Tiger Bakiio", f"{t_bal} RUB")
 
-# Bakiyeleri Çekme
-t_bal_res = bot.tiger_api("getBalance")
-t_balance = t_bal_res.split(":")[1] if "ACCESS_BALANCE" in t_bal_res else "0"
-st.sidebar.metric("💰 Tiger Bakiye", f"{t_balance} RUB")
+h_res = bot.hero_call("getBalance")
+h_bal = h_res.get("balance", "0") if isinstance(h_res, dict) else "0"
+st.sidebar.metric("🦸 Hero Bakiye", f"{h_bal} RUB")
 
-h_bal_res = bot.hero_api("getBalance")
-h_balance = h_bal_res.get("balance", "0") if isinstance(h_bal_res, dict) else "0"
-st.sidebar.metric("💰 Hero Bakiye", f"{h_balance} RUB")
+live = st.sidebar.toggle("Canlı Takip", value=True)
+if st.sidebar.button("Çıkış Yap"):
+    st.session_state["auth"] = False
+    st.rerun()
 
-canli_takip = st.sidebar.toggle("🟢 Canlı Takip", value=True)
+# --- ANA PANEL ---
+st.title("📲 Pro SMS Otomasyon")
 
-# --- ANA EKRAN SEKMELERİ ---
-tab1, tab2 = st.tabs(["🐯 Tiger SMS", "🦸 Hero SMS"])
+tab1, tab2 = st.tabs(["🐯 Tiger SMS (TR)", "🦸 Hero SMS (TR)"])
 
+def add_order(prov, p_id, phone, service, s_code):
+    st.session_state['orders'].append({
+        "provider": prov, "id": p_id, "phone": phone, 
+        "service": service, "s_code": s_code, 
+        "start": time.time(), "code": None, "status": "Bekliyor"
+    })
+
+# --- TIGER SEKİMESİ ---
 with tab1:
-    st.header("Tiger SMS Servisleri")
-    col1, col2 = st.columns(2)
-    
-    # Örnek Tiger Satın Alma Fonksiyonu (Eski mantık)
-    def buy_tiger(s_name, s_code):
-        res = bot.tiger_api("getNumber", service=s_code, country=TR_ID)
-        if "ACCESS_NUMBER" in res:
-            parts = res.split(":")
-            st.session_state['active_orders'].append({
-                "id": parts[1], "phone": parts[2], "service": f"Tiger - {s_name}",
-                "provider": "tiger", "time": time.time(), "status": "Bekliyor", "code": None
-            })
-            st.toast(f"✅ {s_name} Alındı (Tiger)")
-        else: st.error(f"Hata: {res}")
+    c1, c2 = st.columns(2)
+    services = {"Yemeksepeti": "yi", "Uber": "ub", "Getir": "gt", "Whatsapp": "wa"}
+    for i, (name, code) in enumerate(services.items()):
+        col = c1 if i % 2 == 0 else c2
+        if col.button(f"Al: {name} (Tiger)", key=f"t_{code}", use_container_width=True):
+            res = bot.tiger_call("getNumber", service=code, country=TR_ID_TIGER)
+            if "ACCESS_NUMBER" in res:
+                p = res.split(":")
+                add_order("tiger", p[1], p[2], name, code)
+                st.toast(f"Tiger {name} Alındı!")
+            else: st.error(res)
 
-    with col1:
-        if st.button("Tiger Yemeksepeti Al", use_container_width=True):
-            buy_tiger("Yemeksepeti", "yi")
-    with col2:
-        if st.button("Tiger Uber Al", use_container_width=True):
-            buy_tiger("Uber", "ub")
-
+# --- HERO SEKİMESİ ---
 with tab2:
-    st.header("Hero SMS Servisleri")
-    st.info("Hero SMS API üzerinden Türkiye numaraları listeleniyor.")
-    
-    def buy_hero(s_name, s_code):
-        # Hero API getNumber dökümanına göre düzenlenmiştir
-        res = bot.hero_api("getNumber", service=s_code, country="tr") 
-        if res.get("status") == "success":
-            st.session_state['active_orders'].append({
-                "id": res["id"], "phone": res["number"], "service": f"Hero - {s_name}",
-                "provider": "hero", "time": time.time(), "status": "Bekliyor", "code": None
-            })
-            st.toast(f"✅ {s_name} Alındı (Hero)")
-        else:
-            st.error(f"Hero Hatası: {res.get('message', 'Bilinmeyen Hata')}")
+    h1, h2 = st.columns(2)
+    # Hero servis kodlarını dökümanına göre düzenleyin (Örnek: yemeksepeti, uber)
+    h_services = {"Yemeksepeti": "yemeksepeti", "Uber": "uber", "Getir": "getir"}
+    for i, (name, code) in enumerate(h_services.items()):
+        col = h1 if i % 2 == 0 else h2
+        if col.button(f"Al: {name} (Hero)", key=f"h_{code}", use_container_width=True):
+            res = bot.hero_call("getNumber", service=code, country=TR_ID_HERO)
+            if res.get("status") == "success":
+                add_order("hero", res["id"], res["number"], name, code)
+                st.toast(f"Hero {name} Alındı!")
+            else: st.error("Stok yok veya hata!")
 
-    h_col1, h_col2 = st.columns(2)
-    with h_col1:
-        if st.button("Hero Yemeksepeti Al", use_container_width=True):
-            buy_hero("Yemeksepeti", "yemeksepeti") # Servis kodunu hero'ya göre güncelleyin
-    with h_col2:
-        if st.button("Hero Uber Al", use_container_width=True):
-            buy_hero("Uber", "uber")
-
-# --- ORTAK İŞLEM TAKİBİ ---
+# --- TAKİP ALANI ---
 st.divider()
-st.subheader("📋 Aktif İşlemler (Tüm Sağlayıcılar)")
+st.subheader("📋 Aktif Numaralar")
 
-to_remove = []
-for idx, order in enumerate(st.session_state['active_orders']):
-    elapsed = int(time.time() - order['time'])
+to_del = []
+for order in st.session_state['orders']:
+    elapsed = int(time.time() - order['start'])
     
-    # Otomatik İptal (Tiger & Hero için ortak)
-    if order['code'] is None and elapsed >= AUTO_CANCEL_SEC:
-        if order['provider'] == "tiger":
-            bot.tiger_api("setStatus", id=order['id'], status=8)
-        else:
-            bot.hero_api("setStatus", id=order['id'], status="cancel")
-            
-        bot.send_telegram(f"⚠️ <b>OTOMATİK İPTAL</b>\n{order['service']} (+{order['phone']}) iptal edildi.")
-        to_remove.append(order['id'])
+    # Otomatik İptal Kontrolü
+    if order['code'] is None and elapsed > AUTO_CANCEL_SEC:
+        if order['provider'] == "tiger": bot.tiger_call("setStatus", id=order['id'], status=8)
+        else: bot.hero_call("setStatus", id=order['id'], status="cancel")
+        bot.send_tg(f"⚠️ İptal: {order['service']} (+{order['phone']})")
+        to_del.append(order['id'])
         continue
 
     with st.container(border=True):
-        c_info, c_copy, c_actions = st.columns([2, 2, 2])
-        with c_info:
-            st.write(f"**{order['service']}**")
-            # SMS Kontrol
+        col_m, col_p, col_btn = st.columns([3, 2, 1])
+        
+        with col_m:
+            st.write(f"**{order['provider'].upper()} - {order['service']}**")
             if order['code'] is None:
+                # Durum Sorgulama
                 if order['provider'] == "tiger":
-                    check = bot.tiger_api("getStatus", id=order['id'])
-                    if "STATUS_OK" in check:
-                        order['code'] = check.split(":")[1]
-                        bot.tiger_api("setStatus", id=order['id'], status=6)
+                    s = bot.tiger_call("getStatus", id=order['id'])
+                    if "STATUS_OK" in s:
+                        order['code'] = s.split(":")[1]
+                        bot.tiger_call("setStatus", id=order['id'], status=6)
                 else:
-                    check = bot.hero_api("getStatus", id=order['id'])
-                    if check.get("status") == "success" and check.get("code"):
-                        order['code'] = check["code"]
-
+                    s = bot.hero_call("getStatus", id=order['id'])
+                    if s.get("status") == "success" and s.get("code"):
+                        order['code'] = s["code"]
+                
                 if order['code']:
-                    order['status'] = "✅ TAMAMLANDI"
-                    bot.send_telegram(f"📩 <b>SMS!</b> {order['service']}: {order['code']}")
-                else:
-                    order['status'] = f"⌛ {elapsed//60:02d}:{elapsed%60:02d}"
-            
-            st.write(f"Durum: {order['status']}")
-            if order['code']: st.success(f"KOD: **{order['code']}**")
+                    bot.send_tg(f"📩 <b>KOD GELDİ!</b>\n{order['service']}: <code>{order['code']}</code>")
+                
+            st.write(f"Kod: `{order['code'] if order['code'] else 'Bekleniyor...'}`")
+            st.caption(f"Süre: {elapsed}sn / {AUTO_CANCEL_SEC}sn")
 
-        with c_copy:
+        with col_p:
             st.code(f"+{order['phone']}")
-
-        with c_actions:
+            
+        with col_btn:
             if st.button("🗑️", key=f"del_{order['id']}"):
-                to_remove.append(order['id'])
+                to_del.append(order['id'])
 
-# Temizleme ve Yenileme
-if to_remove:
-    st.session_state['active_orders'] = [o for o in st.session_state['active_orders'] if o['id'] not in to_remove]
+# Listeyi Güncelle
+if to_del:
+    st.session_state['orders'] = [o for o in st.session_state['orders'] if o['id'] not in to_del]
     st.rerun()
 
-if canli_takip and len(st.session_state['active_orders']) > 0:
-    time.sleep(3)
+if live and len(st.session_state['orders']) > 0:
+    time.sleep(4)
     st.rerun()
