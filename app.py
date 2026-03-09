@@ -3,200 +3,171 @@ import requests
 import time
 import json
 
-# Mobil uyumluluk için CSS ve meta etiketi
+# Mobil uyumluluk
 st.markdown("""
     <style>
-        input, button, select, textarea {
-            font-size: 16px !important;
-        }
+        input, button, select, textarea { font-size: 16px !important; }
     </style>
-""", unsafe_allow_html=True)
-
-st.markdown("""
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 """, unsafe_allow_html=True)
 
-# Kimlik doğrulama (şifre kontrolü)
+# Authentication
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
 
 if not st.session_state.authenticated:
-    password = st.text_input("Panel Şifresi:", type="password")
-    if password:
+    password = st.text_input("Panel Şifresi:", type="password", key="auth_input")
+    if st.button("Giriş Yap"):
         if password == st.secrets["PANEL_SIFRESI"]:
             st.session_state.authenticated = True
             st.rerun()
         else:
-            st.error("Yanlış şifre. Lütfen tekrar deneyin.")
+            st.error("Yanlış şifre!")
     st.stop()
 
-# Secrets'tan verileri çek (test için örnek değerler, secrets.toml ile değiştirin)
-api_key = st.secrets.get("HERO_API_KEY", "test_api_key_123")
-panel_sifresi = st.secrets.get("PANEL_SIFRESI", "test_sifre_123")
-tg_token = st.secrets.get("TELEGRAM_TOKEN", "test_tg_token_123")
-tg_chat_id = st.secrets.get("TELEGRAM_CHAT_ID", "test_chat_id_123")
+# Secrets
+api_key = st.secrets.get("HERO_API_KEY", "test_key")
+tg_token = st.secrets.get("TELEGRAM_TOKEN", "test_token")
+tg_chat_id = st.secrets.get("TELEGRAM_CHAT_ID", "test_chat")
 
-# API base URL
 base_url = "https://hero-sms.com/stubs/handler_api.php"
 
-# Fonksiyon: Bakiye çekme
+def api_request(params):
+    try:
+        params["api_key"] = api_key
+        r = requests.get(base_url, params=params, timeout=15)
+        r.raise_for_status()
+        return r.text
+    except Exception as e:
+        st.error(f"API hatası: {e}")
+        return None
+
 def get_balance():
-    try:
-        params = {"action": "getBalance", "api_key": api_key}
-        response = requests.get(base_url, params=params)
-        response.raise_for_status()
-        text = response.text
-        if text.startswith("ACCESS_BALANCE:"):
-            return float(text.split(":")[1])
-        else:
-            st.error(f"Bakiye yanıtı hatalı: {text}")
-            return None
-    except Exception as e:
-        st.error(f"Bakiye çekme hatası: {e}")
-        return None
+    text = api_request({"action": "getBalance"})
+    if text and text.startswith("ACCESS_BALANCE:"):
+        return float(text.split(":")[1])
+    return None
 
-# Fonksiyon: Stok ve fiyat çekme (sadece ub ve yi için)
-def get_prices():
+def get_prices(country="90"):
+    text = api_request({"action": "getPrices", "country": country})
+    if not text:
+        return {"ub": {"cost":"N/A","count":"N/A"}, "yi": {"cost":"N/A","count":"N/A"}}
     try:
-        params = {"action": "getPrices", "country": 90, "api_key": api_key}
-        response = requests.get(base_url, params=params)
-        response.raise_for_status()
-        data = json.loads(response.text)
-        turkey_data = data.get("90", {})
-        ub = turkey_data.get("ub", {"cost": "N/A", "count": "N/A"})
-        yi = turkey_data.get("yi", {"cost": "N/A", "count": "N/A"})
-        return {"ub": ub, "yi": yi}
-    except Exception as e:
-        st.error(f"Fiyat/stok çekme hatası: {e}")
-        return {"ub": {"cost": "N/A", "count": "N/A"}, "yi": {"cost": "N/A", "count": "N/A"}}
+        data = json.loads(text)
+        cdata = data.get(str(country), {})
+        return {
+            "ub": cdata.get("ub", {"cost":"N/A","count":"N/A"}),
+            "yi": cdata.get("yi", {"cost":"N/A","count":"N/A"})
+        }
+    except:
+        return {"ub": {"cost":"N/A","count":"N/A"}, "yi": {"cost":"N/A","count":"N/A"}}
 
-# Fonksiyon: Numara alma
-def get_number(service):
-    try:
-        params = {"action": "getNumber", "service": service, "country": 90, "api_key": api_key}
-        response = requests.get(base_url, params=params)
-        response.raise_for_status()
-        text = response.text
-        if text.startswith("ACCESS_NUMBER:"):
-            parts = text.split(":")
-            order_id = parts[1]
-            number = parts[2]
-            return order_id, number
-        else:
-            st.error(f"Numara alma yanıtı hatalı: {text}")
-            return None, None
-    except Exception as e:
-        st.error(f"Numara alma hatası: {e}")
-        return None, None
+def get_number(service, country="90"):
+    text = api_request({"action": "getNumber", "service": service, "country": country})
+    if text and text.startswith("ACCESS_NUMBER:"):
+        _, order_id, number = text.split(":")
+        return order_id, number
+    elif text:
+        st.error(f"Numara alınamadı: {text}")
+    return None, None
 
-# Fonksiyon: Durum sorgulama
 def get_status(order_id):
-    try:
-        params = {"action": "getStatus", "id": order_id, "api_key": api_key}
-        response = requests.get(base_url, params=params)
-        response.raise_for_status()
-        return response.text
-    except Exception as e:
-        st.error(f"Durum sorgulama hatası: {e}")
-        return None
+    text = api_request({"action": "getStatus", "id": order_id})
+    return text
 
-# Fonksiyon: Telegram'a mesaj gönderme
-def send_to_telegram(message):
+def send_telegram(msg):
     try:
-        tg_url = f"https://api.telegram.org/bot{tg_token}/sendMessage"
-        params = {"chat_id": tg_chat_id, "text": message}
-        response = requests.post(tg_url, params=params)
-        response.raise_for_status()
-    except Exception as e:
-        st.error(f"Telegram gönderme hatası: {e}")
+        url = f"https://api.telegram.org/bot{tg_token}/sendMessage"
+        requests.get(url, params={"chat_id": tg_chat_id, "text": msg}, timeout=10)
+    except:
+        pass  # silent fail
 
-# Sidebar: Bakiye göster
-st.sidebar.title("Bakiye Bilgisi")
+# Sidebar
+st.sidebar.title("Durum")
 balance = get_balance()
-if balance is not None:
-    st.sidebar.success(f"{balance} ₺")
+if balance:
+    st.sidebar.success(f"Bakiye: {balance} ₽")  # genelde ruble ama ₺ da olabilir
 else:
-    st.sidebar.error("Bakiye alınamadı.")
+    st.sidebar.error("Bakiye alınamadı")
 
-# Fiyat ve stok verilerini çek
-prices = get_prices()
+# Ülke seçimi
+country_options = {"Türkiye": "90", "Endonezya": "6", "Diğer": "custom"}
+selected_country_name = st.sidebar.selectbox("Ülke", list(country_options.keys()))
+country = country_options[selected_country_name]
+if selected_country_name == "Diğer":
+    country = st.sidebar.text_input("Ülke Kodu (sayı)", "6")
 
-# Session state: Aktif siparişler (her servis için ayrı)
+prices = get_prices(country)
+
+# Session state
 if "active_orders" not in st.session_state:
     st.session_state.active_orders = {}
 
-# Ana arayüz: 2 sütun
+# Ana arayüz
+st.title("SMS Kiralama Paneli")
+
 col1, col2 = st.columns(2)
 
-# Uber sütunu
 with col1:
     st.subheader("Uber")
-    st.write(f"Stok: {prices['ub']['count']}")
-    st.write(f"Fiyat: {prices['ub']['cost']} ₺")
+    st.write(f"Stok: {prices['ub']['count']} | Fiyat: {prices['ub']['cost']}")
     
-    if st.button("Numara Al (Uber)"):
-        order_id, number = get_number("ub")
-        if order_id and number:
-            st.session_state.active_orders["ub"] = {"id": order_id, "number": number, "code": None}
-            st.success("Numara başarıyla alındı!")
+    if st.button("Numara Al → Uber"):
+        oid, num = get_number("ub", country)
+        if oid and num:
+            st.session_state.active_orders["ub"] = {"id": oid, "number": num, "code": None, "country": selected_country_name}
+            st.success(f"Numara alındı: {num}")
             st.rerun()
-    
+
     if "ub" in st.session_state.active_orders:
-        order = st.session_state.active_orders["ub"]
-        st.markdown(f"""
-            <div style="background-color: lightgreen; padding: 10px; border-radius: 5px;">
-                <strong>Aktif Sipariş (Uber)</strong><br>
-                Numara: {order['number']}<br>
-                {"Kod: " + order['code'] if order['code'] else "Kod bekleniyor..."}
-            </div>
-        """, unsafe_allow_html=True)
-        
-        if st.button("Siparişi İptal Et (Uber)"):
+        ord = st.session_state.active_orders["ub"]
+        st.info(f"Aktif: {ord['number']} ({ord['country']})")
+        st.write("Kod:" if ord["code"] else "Kod bekleniyor...")
+        if ord["code"]:
+            st.success(ord["code"])
+        if st.button("Durumu Yenile (Uber)"):
+            st.rerun()
+        if st.button("İptal Et (Uber)"):
             del st.session_state.active_orders["ub"]
             st.rerun()
 
-# Yemeksepeti sütunu
 with col2:
     st.subheader("Yemeksepeti")
-    st.write(f"Stok: {prices['yi']['count']}")
-    st.write(f"Fiyat: {prices['yi']['cost']} ₺")
+    st.write(f"Stok: {prices['yi']['count']} | Fiyat: {prices['yi']['cost']}")
     
-    if st.button("Numara Al (Yemeksepeti)"):
-        order_id, number = get_number("yi")
-        if order_id and number:
-            st.session_state.active_orders["yi"] = {"id": order_id, "number": number, "code": None}
-            st.success("Numara başarıyla alındı!")
+    if st.button("Numara Al → Yemeksepeti"):
+        oid, num = get_number("yi", country)
+        if oid and num:
+            st.session_state.active_orders["yi"] = {"id": oid, "number": num, "code": None, "country": selected_country_name}
+            st.success(f"Numara alındı: {num}")
             st.rerun()
-    
+
     if "yi" in st.session_state.active_orders:
-        order = st.session_state.active_orders["yi"]
-        st.markdown(f"""
-            <div style="background-color: lightgreen; padding: 10px; border-radius: 5px;">
-                <strong>Aktif Sipariş (Yemeksepeti)</strong><br>
-                Numara: {order['number']}<br>
-                {"Kod: " + order['code'] if order['code'] else "Kod bekleniyor..."}
-            </div>
-        """, unsafe_allow_html=True)
-        
-        if st.button("Siparişi İptal Et (Yemeksepeti)"):
+        ord = st.session_state.active_orders["yi"]
+        st.info(f"Aktif: {ord['number']} ({ord['country']})")
+        st.write("Kod:" if ord["code"] else "Kod bekleniyor...")
+        if ord["code"]:
+            st.success(ord["code"])
+        if st.button("Durumu Yenile (Yemeksepeti)"):
+            st.rerun()
+        if st.button("İptal Et (Yemeksepeti)"):
             del st.session_state.active_orders["yi"]
             st.rerun()
 
-# Kod bekleme ve polling (her rerun'da kontrol et, 10 sn aralıklı)
-for service in list(st.session_state.active_orders.keys()):
-    order = st.session_state.active_orders[service]
-    if order["code"] is None:
-        status = get_status(order["id"])
-        if status and status.startswith("STATUS_OK:"):
-            code = status.split(":")[1]
-            order["code"] = code
-            message = f"{service.upper()} SMS Kodu: {code} (Numara: {order['number']})"
-            send_to_telegram(message)
-            st.success(f"{service.upper()} kodu alındı ve Telegram'a gönderildi!")
-            st.rerun()
-        elif status and "STATUS_WAIT" in status:
-            # Bekle ve rerun
-            time.sleep(10)  # 10 saniye aralıklı polling
-            st.rerun()
-        elif status:
-            st.error(f"{service.upper()} durum hatası: {status}")
+# Polling (her 10 sn'de bir kontrol)
+for svc in list(st.session_state.active_orders.keys()):
+    ord = st.session_state.active_orders[svc]
+    if ord["code"] is None:
+        status = get_status(ord["id"])
+        if status:
+            if status.startswith("STATUS_OK:"):
+                code = status.split(":", 1)[1]
+                ord["code"] = code
+                send_telegram(f"{svc.upper()} kodu ({ord['country']}): {code} - Numara: {ord['number']}")
+                st.success(f"{svc.upper()} kodu alındı → Telegram'a gönderildi!")
+                st.rerun()
+            elif "STATUS_WAIT" in status or "WAIT" in status:
+                time.sleep(8)  # biraz daha kısa polling
+                st.rerun()
+            else:
+                st.warning(f"{svc.upper()} durum: {status}")
