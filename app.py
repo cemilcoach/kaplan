@@ -1,187 +1,136 @@
 import streamlit as st
 import requests
 import time
-import re
 
 # --- 1. Sayfa Yapılandırması ve Mobil Uyumluluk ---
-st.set_page_config(page_title="SMS Kiralama Paneli", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="HeroSMS VIP Panel", layout="wide")
 
-# Mobil cihazlarda zoom engelleme ve şık görünüm için CSS
 st.markdown("""
-    <meta name="viewport" content="width=device-width, initial_scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <style>
-    /* Input ve butonlarda otomatik zoom'u engellemek için font size 16px */
-    input, select, textarea, button {
-        font-size: 16px !important;
-    }
-    .stButton>button {
-        width: 100%;
-        border-radius: 10px;
-        height: 3em;
-        background-color: #ff4b4b;
-        color: white;
-    }
-    .status-card {
-        padding: 20px;
-        border-radius: 15px;
-        background-color: #f0f2f6;
-        border-left: 5px solid #00c853;
-        margin-bottom: 20px;
-    }
+    input, button { font-size: 16px !important; }
+    .stButton>button { width: 100%; border-radius: 12px; height: 3.5em; background-color: #007bff; color: white; font-weight: bold; }
+    .order-card { padding: 15px; border-radius: 15px; background-color: #f8f9fa; border-left: 5px solid #28a745; margin-top: 10px; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. Kimlik Doğrulama ve Secrets ---
-# Not: Gerçek kullanımda bunları .streamlit/secrets.toml dosyasına eklemelisin.
+# --- 2. Kimlik Doğrulama ve Sabitler ---
+# Dokümana göre ana sunucu adresi
+BASE_URL = "https://hero-sms.com/stubs/handler_api.php"
+
 try:
     API_KEY = st.secrets["HERO_API_KEY"]
     PANEL_PASS = st.secrets["PANEL_SIFRESI"]
     TG_TOKEN = st.secrets["TELEGRAM_TOKEN"]
     TG_CHAT_ID = st.secrets["TELEGRAM_CHAT_ID"]
 except:
-    # Test amaçlı fallback (Secrets yoksa hata vermemesi için)
+    # Hata almamak için fallback değerler
     API_KEY = "6ce1bb5837f81db1f4cA0b341Ac58956"
     PANEL_PASS = "asnaeb68%A"
     TG_TOKEN = "8443974633:AAEErjkHLykfsNdbvaty_5Z02YUJ3oPQx0E"
     TG_CHAT_ID = "1009360711"
 
-BASE_URL = "https://hero-sms.com/stubs/handler_api.php"
-
-# --- 3. Yardımcı Fonksiyonlar ---
-def send_telegram(message):
-    url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
-    payload = {"chat_id": TG_CHAT_ID, "text": message}
-    try:
-        requests.post(url, data=payload)
-    except:
-        pass
-
-def get_hero_balance():
+# --- 3. API Fonksiyonları ---
+def get_balance():
+    # Doküman: action=getBalance -> ACCESS_BALANCE:<amount>
     params = {"api_key": API_KEY, "action": "getBalance"}
     try:
         res = requests.get(BASE_URL, params=params).text
         if "ACCESS_BALANCE" in res:
             return res.split(":")[1]
-    except:
-        return "0.00"
+    except: return "0.00"
     return "Hata"
 
-def get_hero_prices():
-    params = {"api_key": API_KEY, "action": "getPrices", "country": "90"}
+def get_prices(country_id=90):
+    # Doküman: action=getPrices
+    params = {"api_key": API_KEY, "action": "getPrices", "country": country_id}
     try:
         res = requests.get(BASE_URL, params=params).json()
-        # Sadece Uber (ub) ve Yemeksepeti (yi) çekiliyor
-        data = {
-            "Uber": res.get("90", {}).get("ub", {"cost": 0, "count": 0}),
-            "Yemeksepeti": res.get("90", {}).get("yi", {"cost": 0, "count": 0})
+        # API yanıtı { "90": { "ub": { "cost": X, "count": Y } } } formatındadır
+        country_data = res.get(str(country_id), {})
+        return {
+            "Uber": country_data.get("ub", {"cost": 0, "count": 0}),
+            "Yemeksepeti": country_data.get("yi", {"cost": 0, "count": 0})
         }
-        return data
-    except:
-        return None
+    except: return None
 
-# --- 4. Giriş Ekranı (Password Protection) ---
-if "authenticated" not in st.session_state:
-    st.session_state.authenticated = False
+def set_status(activation_id, status):
+    # Doküman: action=setStatus (1: Hazır, 8: İptal, 6: Tamamla)
+    params = {"api_key": API_KEY, "action": "setStatus", "id": activation_id, "status": status}
+    return requests.get(BASE_URL, params=params).text
 
-if not st.session_state.authenticated:
-    st.title("🔐 Panel Girişi")
-    password_input = st.text_input("Şifre Giriniz", type="password")
-    if st.button("Giriş Yap"):
-        if password_input == PANEL_PASS:
-            st.session_state.authenticated = True
+# --- 4. Giriş Kontrolü ---
+if "auth" not in st.session_state: st.session_state.auth = False
+if not st.session_state.auth:
+    pwd = st.text_input("Panel Şifresi", type="password")
+    if st.button("Giriş"):
+        if pwd == PANEL_PASS:
+            st.session_state.auth = True
             st.rerun()
-        else:
-            st.error("Hatalı Şifre!")
     st.stop()
 
-# --- 5. Ana Uygulama Mantığı ---
-st.sidebar.title("👤 Kullanıcı Paneli")
-balance = get_hero_balance()
-st.sidebar.metric("Güncel Bakiye", f"{balance} ₽")
+# --- 5. Arayüz ---
+st.sidebar.metric("Bakiye", f"{get_balance()} ₽")
+st.title("🇹🇷 HeroSMS Türkiye Paneli")
 
-if st.sidebar.button("🔄 Bakiyeyi Yenile"):
-    st.rerun()
+if "order" not in st.session_state: st.session_state.order = None
 
-st.title("📲 SMS Kiralama (TR)")
-
-# Session State Yönetimi
-if "active_order" not in st.session_state:
-    st.session_state.active_order = None
-
-# Fiyatları Çek
-prices = get_hero_prices()
+prices = get_prices(90) # Türkiye ID: 90 olarak zorlanıyor
 
 if prices:
-    col1, col2 = st.columns(2)
+    cols = st.columns(2)
+    for i, (name, data) in enumerate(prices.items()):
+        with cols[i]:
+            st.subheader(name)
+            st.write(f"Fiyat: **{data['cost']} ₽** | Stok: **{data['count']}**")
+            # Numara Alma (getNumber)
+            if st.button(f"{name} Al", key=name, disabled=st.session_state.order is not None):
+                srv = "ub" if name == "Uber" else "yi"
+                # KRİTİK: country parametresi int(90) olarak gönderiliyor
+                req_params = {"api_key": API_KEY, "action": "getNumber", "service": srv, "country": 90}
+                res = requests.get(BASE_URL, params=req_params).text
+                
+                if "ACCESS_NUMBER" in res:
+                    _, active_id, active_num = res.split(":")
+                    st.session_state.order = {"id": active_id, "num": active_num, "name": name}
+                    # Numara alındıktan sonra durumu 'Hazır' yapıyoruz
+                    set_status(active_id, 1)
+                    st.rerun()
+                else:
+                    st.error(f"Hata: {res}")
 
-    with col1:
-        st.subheader("🚗 Uber")
-        st.write(f"💰 Fiyat: **{prices['Uber']['cost']} ₽**")
-        st.write(f"📦 Stok: **{prices['Uber']['count']}**")
-        if st.button("Uber Al", key="btn_ub", disabled=st.session_state.active_order is not None):
-            res = requests.get(BASE_URL, params={"api_key": API_KEY, "action": "getNumber", "service": "ub", "country": "90"}).text
-            if "ACCESS_NUMBER" in res:
-                parts = res.split(":")
-                st.session_state.active_order = {"id": parts[1], "number": parts[2], "service": "Uber"}
+# --- 6. Aktif Sipariş Takibi ---
+if st.session_state.order:
+    ord = st.session_state.order
+    st.markdown(f"""<div class="order-card">
+        <h3>✅ {ord['name']} Numarası Hazır</h3>
+        <p style='font-size:20px;'>📞 <b>{ord['num']}</b></p>
+        <p>ID: {ord['id']}</p>
+    </div>""", unsafe_allow_html=True)
+
+    # Durum Sorgulama (getStatus)
+    if "code" not in ord:
+        with st.spinner("SMS bekleniyor..."):
+            check = requests.get(BASE_URL, params={"api_key": API_KEY, "action": "getStatus", "id": ord['id']}).text
+            if "STATUS_OK" in check:
+                code = check.split(":")[1]
+                st.session_state.order["code"] = code
+                # Telegram Bildirimi
+                requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage", 
+                              data={"chat_id": TG_CHAT_ID, "text": f"✅ {ord['name']} Kodu: {code}\nNo: {ord['num']}"})
                 st.rerun()
-            else:
-                st.error(f"Hata: {res}")
-
-    with col2:
-        st.subheader("🍔 Yemeksepeti")
-        st.write(f"💰 Fiyat: **{prices['Yemeksepeti']['cost']} ₽**")
-        st.write(f"📦 Stok: **{prices['Yemeksepeti']['count']}**")
-        if st.button("Yemeksepeti Al", key="btn_yi", disabled=st.session_state.active_order is not None):
-            res = requests.get(BASE_URL, params={"api_key": API_KEY, "action": "getNumber", "service": "yi", "country": "90"}).text
-            if "ACCESS_NUMBER" in res:
-                parts = res.split(":")
-                st.session_state.active_order = {"id": parts[1], "number": parts[2], "service": "Yemeksepeti"}
+            elif "STATUS_WAIT_CODE" in check:
+                time.sleep(4)
                 st.rerun()
-            else:
-                st.error(f"Hata: {res}")
-else:
-    st.warning("API verileri alınamadı. Lütfen API Key kontrol edin.")
 
-# --- 6. Aktif Sipariş ve SMS Sorgulama ---
-if st.session_state.active_order:
-    order = st.session_state.active_order
-    st.divider()
-    
-    st.markdown(f"""
-    <div class="status-card">
-        <h3>🔥 Aktif Sipariş: {order['service']}</h3>
-        <p><b>Numara:</b> {order['number']}</p>
-        <p><b>ID:</b> {order['id']}</p>
-    </div>
-    """, unsafe_allow_html=True)
+    if "code" in ord:
+        st.success(f"📩 GELEN KOD: {ord['code']}")
+        if st.button("İşlemi Tamamla (Onayla)"):
+            set_status(ord['id'], 6) # Aktivasyonu tamamla
+            st.session_state.order = None
+            st.rerun()
 
-    status_area = st.empty()
-    
-    # Otomatik Sorgulama Döngüsü (Simüle edilmiş veya gerçek)
-    if "sms_code" not in order:
-        with st.spinner("Kod bekleniyor..."):
-            check_params = {"api_key": API_KEY, "action": "getStatus", "id": order['id']}
-            status_res = requests.get(BASE_URL, params=check_params).text
-            
-            if "STATUS_OK" in status_res:
-                sms_code = status_res.split(":")[1]
-                st.session_state.active_order["sms_code"] = sms_code
-                send_telegram(f"✅ Yeni SMS!\nServis: {order['service']}\nNo: {order['number']}\nKod: {sms_code}")
-                st.success(f"GELEN KOD: {sms_code}")
-                st.balloons()
-            elif "STATUS_WAIT_CODE" in status_res:
-                status_area.info("⏳ Kod bekleniyor, lütfen bekleyin...")
-                time.sleep(3) # Çok sık istek atmamak için
-                st.rerun()
-            else:
-                status_area.warning(f"Durum: {status_res}")
-
-    if "sms_code" in order:
-        st.success(f"📩 Alınan Kod: **{order['sms_code']}**")
-
-    if st.button("❌ Siparişi Kapat / Yeni Numara"):
-        st.session_state.active_order = None
+    if st.button("🚫 İptal Et ve İade Al"):
+        set_status(ord['id'], 8) # Aktivasyonu iptal et
+        st.session_state.order = None
         st.rerun()
-
-# --- 7. Alt Bilgi ---
-st.caption("Developed by Gemini with Streamlit • 2026")
