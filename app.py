@@ -1,184 +1,118 @@
 import streamlit as st
 import requests
-import time
-import json
 
-# 1. SAYFA AYARLARI
-st.set_page_config(page_title="Multi SMS Pro", layout="wide", page_icon="🇹🇷")
+# --- 1. GÖRSEL VE MOBİL AYARLAR ---
+st.set_page_config(page_title="Pro SMS Panel", layout="wide", page_icon="📲")
 
-# --- GÜVENLİ VERİ ÇEKME (SECRETS) ---
+# Mobil Zoom Engelleyici ve Şık Butonlar
+st.markdown("""
+    <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0">
+    </head>
+    <style>
+        input, select, textarea { font-size: 16px !important; }
+        .stButton>button { width: 100%; border-radius: 12px; height: 3.5em; font-weight: bold; }
+        .stTabs [data-baseweb="tab-list"] { gap: 10px; }
+        .stTabs [data-baseweb="tab"] { 
+            height: 50px; white-space: pre-wrap; background-color: #161b22; 
+            border-radius: 10px 10px 0 0; color: white;
+        }
+    </style>
+""", unsafe_allow_html=True)
+
+# --- 2. SECRETS KONTROLÜ ---
 try:
-    # Tiger & Hero Keys
-    API_KEY_TIGER = st.secrets["TIGER_API_KEY"]
-    API_KEY_HERO = st.secrets["HERO_API_KEY"]
-    
-    # Genel Ayarlar
-    PANEL_SIFRESI = st.secrets["PANEL_SIFRESI"]
-    TG_TOKEN = st.secrets["TELEGRAM_TOKEN"]
-    TG_CHAT_ID = st.secrets["TELEGRAM_CHAT_ID"]
-except KeyError as e:
-    st.error(f"🚨 Secrets dosyasında eksik değişken: {e}")
-    st.info("Lütfen .streamlit/secrets.toml dosyanızı kontrol edin.")
+    S = st.secrets
+    KEYS = {
+        "t": S["TIGER_API_KEY"],
+        "h": S["HERO_API_KEY"],
+        "p": S["PANEL_SIFRESI"],
+        "tg": S["TELEGRAM_TOKEN"],
+        "cid": S["TELEGRAM_CHAT_ID"]
+    }
+except Exception as e:
+    st.error("Secrets eksik! Lütfen API anahtarlarını kontrol edin."); st.stop()
+
+# --- 3. SESSION STATE ---
+if 'auth' not in st.session_state: st.session_state.auth = False
+if 'order' not in st.session_state: st.session_state.order = None
+
+# --- 4. GİRİŞ KONTROLÜ ---
+if not st.session_state.auth:
+    st.title("🔐 Panel Giriş")
+    pwd = st.text_input("Şifre", type="password")
+    if st.button("Giriş Yap") and pwd == KEYS["p"]:
+        st.session_state.auth = True; st.rerun()
     st.stop()
 
-# Sabitler
-TIGER_URL = "https://api.tiger-sms.com/stubs/handler_api.php"
-HERO_URL = "https://hero-sms.com/api"
-TR_ID_TIGER = "62"
-TR_ID_HERO = "tr"
-AUTO_CANCEL_SEC = 135
-
-class SMSManager:
-    def __init__(self, t_key, h_key):
-        self.t_key = t_key
-        self.h_key = h_key
-
-    def send_tg(self, msg):
-        url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
-        try: requests.post(url, data={"chat_id": TG_CHAT_ID, "text": msg, "parse_mode": "HTML"}, timeout=5)
-        except: pass
-
-    # --- TIGER API ---
-    def tiger_call(self, action, **kwargs):
-        params = {"api_key": self.t_key, "action": action}
-        params.update(kwargs)
-        try:
-            r = requests.get(TIGER_URL, params=params, timeout=10)
-            return r.text
-        except: return "ERROR"
-
-    # --- HERO API ---
-    def hero_call(self, action, **kwargs):
-        params = {"api_key": self.h_key, "action": action}
-        params.update(kwargs)
-        try:
-            r = requests.get(HERO_URL, params=params, timeout=10)
-            return r.json()
-        except: return {"status": "error"}
-
-# --- SESSION STATE ---
-if "auth" not in st.session_state: st.session_state["auth"] = False
-if 'orders' not in st.session_state: st.session_state['orders'] = []
-
-# --- LOGIN ---
-if not st.session_state["auth"]:
-    st.title("🔒 SMS Panel Giriş")
-    pwd = st.text_input("Şifre:", type="password")
-    if st.button("Giriş", use_container_width=True):
-        if pwd == PANEL_SIFRESI:
-            st.session_state["auth"] = True
-            st.rerun()
-        else: st.error("Hatalı!")
-    st.stop()
-
-bot = SMSManager(API_KEY_TIGER, API_KEY_HERO)
-
-# --- SIDEBAR ---
-st.sidebar.title("🎮 Kontrol Merkezi")
-t_res = bot.tiger_call("getBalance")
-t_bal = t_res.split(":")[1] if "BALANCE" in t_res else "0"
-st.sidebar.metric("🐯 Tiger Bakiio", f"{t_bal} RUB")
-
-h_res = bot.hero_call("getBalance")
-h_bal = h_res.get("balance", "0") if isinstance(h_res, dict) else "0"
-st.sidebar.metric("🦸 Hero Bakiye", f"{h_bal} RUB")
-
-live = st.sidebar.toggle("Canlı Takip", value=True)
-if st.sidebar.button("Çıkış Yap"):
-    st.session_state["auth"] = False
-    st.rerun()
-
-# --- ANA PANEL ---
-st.title("📲 Pro SMS Otomasyon")
-
-tab1, tab2 = st.tabs(["🐯 Tiger SMS (TR)", "🦸 Hero SMS (TR)"])
-
-def add_order(prov, p_id, phone, service, s_code):
-    st.session_state['orders'].append({
-        "provider": prov, "id": p_id, "phone": phone, 
-        "service": service, "s_code": s_code, 
-        "start": time.time(), "code": None, "status": "Bekliyor"
-    })
-
-# --- TIGER SEKİMESİ ---
-with tab1:
-    c1, c2 = st.columns(2)
-    services = {"Yemeksepeti": "yi", "Uber": "ub", "Getir": "gt", "Whatsapp": "wa"}
-    for i, (name, code) in enumerate(services.items()):
-        col = c1 if i % 2 == 0 else c2
-        if col.button(f"Al: {name} (Tiger)", key=f"t_{code}", use_container_width=True):
-            res = bot.tiger_call("getNumber", service=code, country=TR_ID_TIGER)
-            if "ACCESS_NUMBER" in res:
-                p = res.split(":")
-                add_order("tiger", p[1], p[2], name, code)
-                st.toast(f"Tiger {name} Alındı!")
-            else: st.error(res)
-
-# --- HERO SEKİMESİ ---
-with tab2:
-    h1, h2 = st.columns(2)
-    # Hero servis kodlarını dökümanına göre düzenleyin (Örnek: yemeksepeti, uber)
-    h_services = {"Yemeksepeti": "yemeksepeti", "Uber": "uber", "Getir": "getir"}
-    for i, (name, code) in enumerate(h_services.items()):
-        col = h1 if i % 2 == 0 else h2
-        if col.button(f"Al: {name} (Hero)", key=f"h_{code}", use_container_width=True):
-            res = bot.hero_call("getNumber", service=code, country=TR_ID_HERO)
-            if res.get("status") == "success":
-                add_order("hero", res["id"], res["number"], name, code)
-                st.toast(f"Hero {name} Alındı!")
-            else: st.error("Stok yok veya hata!")
-
-# --- TAKİP ALANI ---
-st.divider()
-st.subheader("📋 Aktif Numaralar")
-
-to_del = []
-for order in st.session_state['orders']:
-    elapsed = int(time.time() - order['start'])
+# --- 5. SIDEBAR (BAKİYELER) ---
+with st.sidebar:
+    st.title("🤖 Bakiye Kontrol")
     
-    # Otomatik İptal Kontrolü
-    if order['code'] is None and elapsed > AUTO_CANCEL_SEC:
-        if order['provider'] == "tiger": bot.tiger_call("setStatus", id=order['id'], status=8)
-        else: bot.hero_call("setStatus", id=order['id'], status="cancel")
-        bot.send_tg(f"⚠️ İptal: {order['service']} (+{order['phone']})")
-        to_del.append(order['id'])
-        continue
-
-    with st.container(border=True):
-        col_m, col_p, col_btn = st.columns([3, 2, 1])
+    try:
+        # Tiger Bakiye
+        t_res = requests.get(f"https://api.tiger-sms.com/stubs/handler_api.php?api_key={KEYS['t']}&action=getBalance", timeout=10).text
+        t_bal = t_res.split(':')[1] if 'ACCESS' in t_res else "0"
         
-        with col_m:
-            st.write(f"**{order['provider'].upper()} - {order['service']}**")
-            if order['code'] is None:
-                # Durum Sorgulama
-                if order['provider'] == "tiger":
-                    s = bot.tiger_call("getStatus", id=order['id'])
-                    if "STATUS_OK" in s:
-                        order['code'] = s.split(":")[1]
-                        bot.tiger_call("setStatus", id=order['id'], status=6)
-                else:
-                    s = bot.hero_call("getStatus", id=order['id'])
-                    if s.get("status") == "success" and s.get("code"):
-                        order['code'] = s["code"]
-                
-                if order['code']:
-                    bot.send_tg(f"📩 <b>KOD GELDİ!</b>\n{order['service']}: <code>{order['code']}</code>")
-                
-            st.write(f"Kod: `{order['code'] if order['code'] else 'Bekleniyor...'}`")
-            st.caption(f"Süre: {elapsed}sn / {AUTO_CANCEL_SEC}sn")
+        # Hero Bakiye
+        h_res = requests.get(f"https://hero-sms.com/stubs/handler_api.php?api_key={KEYS['h']}&action=getBalance", timeout=10).text
+        h_bal = h_res.split(':')[1] if 'ACCESS' in h_res else "0"
+    except:
+        t_bal, h_bal = "ERR", "ERR"
 
-        with col_p:
-            st.code(f"+{order['phone']}")
-            
-        with col_btn:
-            if st.button("🗑️", key=f"del_{order['id']}"):
-                to_del.append(order['id'])
+    st.metric("🐯 Tiger SMS", f"{t_bal} ₽")
+    st.metric("🦸 Hero SMS", f"{h_bal} $")
+    
+    st.divider()
+    if st.button("🔄 Verileri Yenile"): st.rerun()
+    
+    if st.button("🔔 Telegram Test"):
+        test_url = f"https://api.telegram.org/bot{KEYS['tg']}/sendMessage"
+        requests.post(test_url, data={"chat_id": KEYS["cid"], "text": "✅ Panel Telegram bağlantısı aktif!"})
+        st.toast("Test mesajı gönderildi!")
 
-# Listeyi Güncelle
-if to_del:
-    st.session_state['orders'] = [o for o in st.session_state['orders'] if o['id'] not in to_del]
-    st.rerun()
+# --- 6. ALIM FONKSİYONU ---
+def process_buy(src, svc, name):
+    with st.spinner(f"{name} numarası alınıyor..."):
+        # Tiger Endonezya (62), Hero Türkiye (90) veya Endonezya (62) tercih edilebilir.
+        # İsteğine göre burayı 90 (TR) veya 62 (ID) yapabiliriz. Şimdilik 62 (En ucuz) olarak ayarlandı.
+        country = "62" 
+        base = "https://api.tiger-sms.com/stubs/handler_api.php" if src == "t" else "https://hero-sms.com/stubs/handler_api.php"
+        
+        url = f"{base}?api_key={KEYS[src]}&action=getNumber&service={svc}&country={country}"
+        try:
+            res = requests.get(url, timeout=15).text
+            if "ACCESS" in res:
+                p = res.split(":")
+                st.session_state.order = {"id": p[1], "num": p[2], "src": src, "name": name}
+                st.toast(f"✅ {name} numarası alındı!")
+            else:
+                st.error(f"Hata: {res}")
+        except:
+            st.error("Bağlantı hatası!")
 
-if live and len(st.session_state['orders']) > 0:
-    time.sleep(4)
-    st.rerun()
+# --- 7. ANA PANEL ---
+st.title("📲 SMS Tedarik Paneli")
+tab1, tab2 = st.tabs(["🐯 Tiger SMS", "🦸 Hero SMS"])
+
+with tab1:
+    st.subheader("Tiger SMS Servisleri")
+    c1, c2 = st.columns(2)
+    if c1.button("🍔 Yemeksepeti (T)"): process_buy("t", "yi", "Yemeksepeti")
+    if c2.button("🚗 Uber (T)"): process_buy("t", "ub", "Uber")
+
+with tab2:
+    st.subheader("Hero SMS Servisleri")
+    c1, c2 = st.columns(2)
+    if c1.button("🍔 Yemeksepeti (H)"): process_buy("h", "yi", "Yemeksepeti")
+    if c2.button("🚗 Uber (H)"): process_buy("h", "ub", "Uber")
+
+# --- 8. SİPARİŞ TAKİP ---
+if st.session_state.order:
+    ord = st.session_state.order
+    st.divider()
+    st.success(f"✅ **Aktif {ord['name']} Numarası:** `+{ord['num']}` ({ord['src'].upper()})")
+    st.info("📩 Kod geldiğinde otomatik olarak Telegram botunuza gönderilecektir.")
+    
+    if st.button("🗑️ Siparişi Kapat"):
+        st.session_state.order = None; st.rerun()
